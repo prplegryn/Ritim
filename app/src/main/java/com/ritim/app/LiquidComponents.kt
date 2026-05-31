@@ -178,6 +178,8 @@ fun LiquidBottomTabs(
     blurRadius: Dp = 8.dp,
     refractionHeight: Dp = 24.dp,
     refractionAmount: Dp = 24.dp,
+    containerHeight: Dp = 64.dp,
+    focusHeight: Dp = 56.dp,
     content: @Composable RowScope.() -> Unit
 ) {
     val tabsBackdrop = rememberLayerBackdrop()
@@ -286,7 +288,7 @@ fun LiquidBottomTabs(
                     onDrawSurface = { drawRect(containerColor) }
                 )
                 .then(interactiveHighlight.modifier)
-                .height(64.dp)
+                .height(containerHeight)
                 .fillMaxWidth()
                 .padding(4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -322,7 +324,7 @@ fun LiquidBottomTabs(
                         onDrawSurface = { drawRect(containerColor) }
                     )
                     .then(interactiveHighlight.modifier)
-                    .height(56.dp)
+                    .height(focusHeight)
                     .fillMaxWidth()
                     .padding(horizontal = 4.dp)
                     .graphicsLayer(colorFilter = ColorFilter.tint(accentColor)),
@@ -380,7 +382,7 @@ fun LiquidBottomTabs(
                         drawRect(Color.Black.copy(alpha = 0.03f * progress))
                     }
                 )
-                .height(56.dp)
+                .height(focusHeight)
                 .fillMaxWidth(1f / tabsCount)
         )
     }

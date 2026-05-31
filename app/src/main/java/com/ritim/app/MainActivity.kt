@@ -4,11 +4,14 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -16,8 +19,11 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -27,6 +33,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -79,27 +86,60 @@ private fun RitimPageBackground(
     selectedTabIndex: Int,
     modifier: Modifier = Modifier
 ) {
-    val visual = when (selectedTabIndex) {
-        1 -> PageVisual(
-            gradient = listOf(Color(0xFFF0F6F2), Color(0xFFDDECE5), Color(0xFFEAF0F6)),
-            line = Color(0xFF2E7D5B),
-            accent = Color(0xFF88C7A2)
-        )
-        2 -> PageVisual(
-            gradient = listOf(Color(0xFFF8F2EF), Color(0xFFEADFD8), Color(0xFFF2EAF0)),
-            line = Color(0xFF936550),
-            accent = Color(0xFFD4A28C)
-        )
-        else -> PageVisual(
-            gradient = listOf(Color(0xFFF4F7F8), Color(0xFFE6EEF4), Color(0xFFF5EFF3)),
-            line = Color(0xFF0088FF),
-            accent = Color(0xFF8DCBFF)
-        )
+    val targetIndex = selectedTabIndex.coerceIn(0, 2)
+    var currentIndex by remember { mutableIntStateOf(targetIndex) }
+    var previousIndex by remember { mutableIntStateOf(targetIndex) }
+    var direction by remember { mutableIntStateOf(0) }
+    val progress = remember { Animatable(1f) }
+
+    LaunchedEffect(targetIndex) {
+        if (targetIndex != currentIndex) {
+            previousIndex = currentIndex
+            direction = if (targetIndex > currentIndex) 1 else -1
+            currentIndex = targetIndex
+            progress.snapTo(0f)
+            progress.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(
+                    durationMillis = 340,
+                    easing = FastOutSlowInEasing
+                )
+            )
+        }
     }
 
+    Box(modifier) {
+        if (progress.value < 1f) {
+            PageBackgroundLayer(
+                visual = pageVisual(previousIndex),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        alpha = 1f - progress.value
+                        translationX = -direction * size.width * 0.035f * progress.value
+                    }
+            )
+        }
+        PageBackgroundLayer(
+            visual = pageVisual(currentIndex),
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    val remaining = 1f - progress.value
+                    alpha = 0.62f + 0.38f * progress.value
+                    translationX = direction * size.width * 0.045f * remaining
+                }
+        )
+    }
+}
+
+@Composable
+private fun PageBackgroundLayer(
+    visual: PageVisual,
+    modifier: Modifier = Modifier
+) {
     Box(
-        modifier
-            .background(Brush.verticalGradient(visual.gradient))
+        modifier.background(Brush.verticalGradient(visual.gradient))
     ) {
         Canvas(Modifier.fillMaxSize()) {
             val short = size.minDimension
@@ -144,6 +184,25 @@ private fun RitimPageBackground(
     }
 }
 
+private fun pageVisual(index: Int): PageVisual =
+    when (index) {
+        1 -> PageVisual(
+            gradient = listOf(Color(0xFFF0F6F2), Color(0xFFDDECE5), Color(0xFFEAF0F6)),
+            line = Color(0xFF2E7D5B),
+            accent = Color(0xFF88C7A2)
+        )
+        2 -> PageVisual(
+            gradient = listOf(Color(0xFFF8F2EF), Color(0xFFEADFD8), Color(0xFFF2EAF0)),
+            line = Color(0xFF936550),
+            accent = Color(0xFFD4A28C)
+        )
+        else -> PageVisual(
+            gradient = listOf(Color(0xFFF4F7F8), Color(0xFFE6EEF4), Color(0xFFF5EFF3)),
+            line = Color(0xFF0088FF),
+            accent = Color(0xFF8DCBFF)
+        )
+    }
+
 private data class PageVisual(
     val gradient: List<Color>,
     val line: Color,
@@ -159,13 +218,13 @@ private fun RitimBottomBar(
 ) {
     val accentColor = Color(0xFF0088FF)
     val containerColor = Color(0xFFFAFAFA).copy(0.4f)
-    val navHeight = 64.dp
+    val navHeight = 62.dp
 
     Row(
         modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
+            .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
             .height(navHeight),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -180,6 +239,8 @@ private fun RitimBottomBar(
             refractionHeight = 24.dp,
             refractionAmount = 24.dp,
             containerColor = containerColor,
+            containerHeight = navHeight,
+            focusHeight = 54.dp,
             modifier = Modifier.weight(1f)
         ) {
             listOf("主页", "库", "我的").forEachIndexed { index, label ->
@@ -203,7 +264,7 @@ private fun RitimBottomBar(
             refractionAmount = 22.dp,
             height = navHeight,
             horizontalPadding = 0.dp,
-            pressScale = 0.94f
+            pressScale = 0.96f
         ) {
             SearchGlyph(
                 modifier = Modifier.size(24.dp),
