@@ -90,6 +90,7 @@ fun LiquidButton(
     refractionAmount: Dp = 24.dp,
     height: Dp = 48.dp,
     horizontalPadding: Dp = 16.dp,
+    pressScale: Float = 1.06f,
     content: @Composable RowScope.() -> Unit
 ) {
     val animationScope = rememberCoroutineScope()
@@ -112,7 +113,7 @@ fun LiquidButton(
                         val width = size.width
                         val heightPx = size.height
                         val progress = interactiveHighlight.pressProgress
-                        val scale = lerp(1f, 1f + 4.dp.toPx() / size.height, progress)
+                        val scale = lerp(1f, pressScale, progress)
 
                         val maxOffset = size.minDimension
                         val initialDerivative = 0.05f
@@ -202,13 +203,12 @@ fun LiquidBottomTabs(
 
         val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
         val animationScope = rememberCoroutineScope()
-        var currentIndex by remember(selectedTabIndex) {
-            mutableIntStateOf(selectedTabIndex())
-        }
+        val selectedIndex = selectedTabIndex().coerceIn(0, tabsCount - 1)
+        var currentIndex by remember { mutableIntStateOf(selectedIndex) }
         val dampedDragAnimation = remember(animationScope) {
             DampedDragAnimation(
                 animationScope = animationScope,
-                initialValue = selectedTabIndex().toFloat(),
+                initialValue = selectedIndex.toFloat(),
                 valueRange = 0f..(tabsCount - 1).toFloat(),
                 visibilityThreshold = 0.001f,
                 initialScale = 1f,
@@ -236,9 +236,10 @@ fun LiquidBottomTabs(
                 }
             )
         }
-        LaunchedEffect(selectedTabIndex) {
-            snapshotFlow { selectedTabIndex() }
-                .collectLatest { currentIndex = it }
+        LaunchedEffect(selectedIndex) {
+            if (currentIndex != selectedIndex) {
+                currentIndex = selectedIndex
+            }
         }
         LaunchedEffect(dampedDragAnimation) {
             snapshotFlow { currentIndex }

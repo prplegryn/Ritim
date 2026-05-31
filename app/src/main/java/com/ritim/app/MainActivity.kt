@@ -6,21 +6,15 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,7 +22,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -36,10 +29,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
@@ -68,7 +58,7 @@ fun RitimApp() {
             .fillMaxSize()
             .background(pageBackground)
     ) {
-        HomeSurface(
+        RitimPageBackground(
             selectedTabIndex = selectedTabIndex,
             modifier = Modifier
                 .fillMaxSize()
@@ -85,127 +75,80 @@ fun RitimApp() {
 }
 
 @Composable
-private fun HomeSurface(
+private fun RitimPageBackground(
     selectedTabIndex: Int,
     modifier: Modifier = Modifier
 ) {
-    val sectionTitle = when (selectedTabIndex) {
-        1 -> "音乐库"
-        2 -> "我的"
-        else -> "主页"
+    val visual = when (selectedTabIndex) {
+        1 -> PageVisual(
+            gradient = listOf(Color(0xFFF0F6F2), Color(0xFFDDECE5), Color(0xFFEAF0F6)),
+            line = Color(0xFF2E7D5B),
+            accent = Color(0xFF88C7A2)
+        )
+        2 -> PageVisual(
+            gradient = listOf(Color(0xFFF8F2EF), Color(0xFFEADFD8), Color(0xFFF2EAF0)),
+            line = Color(0xFF936550),
+            accent = Color(0xFFD4A28C)
+        )
+        else -> PageVisual(
+            gradient = listOf(Color(0xFFF4F7F8), Color(0xFFE6EEF4), Color(0xFFF5EFF3)),
+            line = Color(0xFF0088FF),
+            accent = Color(0xFF8DCBFF)
+        )
     }
 
-    Column(
+    Box(
         modifier
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xFFF4F7F8),
-                        Color(0xFFE9F0ED),
-                        Color(0xFFF8F1F2)
+            .background(Brush.verticalGradient(visual.gradient))
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val short = size.minDimension
+            val stroke = Stroke(width = 1.4.dp.toPx(), cap = StrokeCap.Round)
+            drawCircle(
+                color = visual.accent.copy(alpha = 0.22f),
+                radius = short * 0.42f,
+                center = Offset(size.width * 0.18f, size.height * 0.18f)
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = 0.30f),
+                radius = short * 0.34f,
+                center = Offset(size.width * 0.88f, size.height * 0.34f)
+            )
+            drawCircle(
+                color = visual.accent.copy(alpha = 0.16f),
+                radius = short * 0.45f,
+                center = Offset(size.width * 0.78f, size.height * 0.82f)
+            )
+            repeat(8) { index ->
+                val y = size.height * (0.16f + index * 0.095f)
+                val drift = if (index % 2 == 0) short * 0.05f else -short * 0.04f
+                drawLine(
+                    color = visual.line.copy(alpha = 0.08f),
+                    start = Offset(size.width * 0.08f, y),
+                    end = Offset(size.width * 0.92f, y + drift),
+                    strokeWidth = stroke.width,
+                    cap = StrokeCap.Round
+                )
+            }
+            repeat(7) { index ->
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.42f),
+                    radius = 2.5.dp.toPx(),
+                    center = Offset(
+                        x = size.width * (0.16f + index * 0.11f),
+                        y = size.height * (0.58f + (index % 3) * 0.055f)
                     )
                 )
-            )
-            .statusBarsPadding()
-            .padding(horizontal = 22.dp, vertical = 22.dp)
-            .padding(bottom = 108.dp)
-    ) {
-        BasicText(
-            "Ritim",
-            style = TextStyle(
-                color = Color(0xFF111315),
-                fontSize = 34.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-        )
-        Spacer(Modifier.height(10.dp))
-        BasicText(
-            sectionTitle,
-            style = TextStyle(
-                color = Color(0xFF687076),
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium
-            )
-        )
-        Spacer(Modifier.height(28.dp))
-
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            CoverTile(
-                title = "Morning Pulse",
-                gradient = listOf(Color(0xFF0088FF), Color(0xFFB6F1D7)),
-                modifier = Modifier.weight(1f)
-            )
-            CoverTile(
-                title = "City Tempo",
-                gradient = listOf(Color(0xFFFF6B5E), Color(0xFFFFD166)),
-                modifier = Modifier.weight(1f)
-            )
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            CoverTile(
-                title = "Soft Focus",
-                gradient = listOf(Color(0xFF2D3142), Color(0xFFBFC0C0)),
-                modifier = Modifier.weight(1f)
-            )
-            CoverTile(
-                title = "Late Signals",
-                gradient = listOf(Color(0xFF7B61FF), Color(0xFFEAF5F1)),
-                modifier = Modifier.weight(1f)
-            )
-        }
-    }
-}
-
-@Composable
-private fun CoverTile(
-    title: String,
-    gradient: List<Color>,
-    modifier: Modifier = Modifier
-) {
-    Column(modifier) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .clip(RoundedCornerShape(8.dp))
-                .background(Brush.linearGradient(gradient))
-        ) {
-            Canvas(Modifier.fillMaxSize()) {
-                val stroke = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
-                val left = size.width * 0.18f
-                val right = size.width * 0.82f
-                for (index in 0..4) {
-                    val y = size.height * (0.32f + index * 0.09f)
-                    drawLine(
-                        color = Color.White.copy(alpha = 0.24f + index * 0.04f),
-                        start = Offset(left, y),
-                        end = Offset(right, y + if (index % 2 == 0) 18.dp.toPx() else -14.dp.toPx()),
-                        strokeWidth = stroke.width,
-                        cap = StrokeCap.Round
-                    )
-                }
             }
         }
-        Spacer(Modifier.height(9.dp))
-        BasicText(
-            title,
-            style = TextStyle(
-                color = Color(0xFF171A1D),
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium
-            )
-        )
     }
 }
+
+private data class PageVisual(
+    val gradient: List<Color>,
+    val line: Color,
+    val accent: Color
+)
 
 @Composable
 private fun RitimBottomBar(
@@ -215,6 +158,7 @@ private fun RitimBottomBar(
     modifier: Modifier = Modifier
 ) {
     val accentColor = Color(0xFF0088FF)
+    val containerColor = Color(0xFFFAFAFA).copy(0.4f)
     val navHeight = 64.dp
 
     Row(
@@ -235,6 +179,7 @@ private fun RitimBottomBar(
             blurRadius = 8.dp,
             refractionHeight = 24.dp,
             refractionAmount = 24.dp,
+            containerColor = containerColor,
             modifier = Modifier.weight(1f)
         ) {
             listOf("主页", "库", "我的").forEachIndexed { index, label ->
@@ -252,16 +197,17 @@ private fun RitimBottomBar(
             modifier = Modifier
                 .size(navHeight)
                 .semantics { contentDescription = "搜索" },
-            tint = accentColor,
+            surfaceColor = containerColor,
             blurRadius = 8.dp,
             refractionHeight = 18.dp,
             refractionAmount = 22.dp,
             height = navHeight,
-            horizontalPadding = 0.dp
+            horizontalPadding = 0.dp,
+            pressScale = 0.94f
         ) {
             SearchGlyph(
                 modifier = Modifier.size(24.dp),
-                color = Color.White
+                color = Color(0xFF1E1E1E)
             )
         }
     }
