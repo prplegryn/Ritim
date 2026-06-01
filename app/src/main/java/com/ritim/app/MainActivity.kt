@@ -1992,7 +1992,9 @@ private fun PlayerCardPage(
         } else {
             0.dp
         }
-        val translationButtonDrop = if (compactPlayerLayout) 88.dp else 108.dp
+        val headerSpacer = if (compactPlayerLayout) 28.dp - coverLift else 42.dp - coverLift
+        val translationButtonTopOffset = 14.dp + 4.dp + headerSpacer + coverSize +
+            coverLift + controlsTopPadding + (if (compactPlayerLayout) 82.dp else 96.dp)
         val coverTranslationXPx = with(density) {
             12.dp.toPx() * lyricsProgress
         }
@@ -2180,23 +2182,6 @@ private fun PlayerCardPage(
                     }
                 }
 
-                if (lyricsProgress > 0.01f) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(0.dp)
-                            .graphicsLayer { alpha = lyricsProgress }
-                    ) {
-                        TranslationPillButton(
-                            selected = translationActive,
-                            onClick = { translationActive = !translationActive },
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .offset(y = translationButtonDrop)
-                        )
-                    }
-                }
-
                 Spacer(Modifier.height(coverLift))
 
                 Column(
@@ -2312,6 +2297,18 @@ private fun PlayerCardPage(
                         }
                     }
                 }
+            }
+
+            if (lyricsProgress > 0.01f) {
+                TranslationPillButton(
+                    selected = translationActive,
+                    onClick = { translationActive = !translationActive },
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .offset(y = translationButtonTopOffset)
+                        .graphicsLayer { alpha = lyricsProgress }
+                )
             }
 
         }
@@ -2598,7 +2595,7 @@ private fun LyricsPanel(
         val viewportHeightPx = constraints.maxHeight
         val activeAnchorFromTop = maxHeight * 0.35f
         val activeAnchorBottomPadding = maxHeight - activeAnchorFromTop
-        val lineSpacing = 10.dp
+        val lineSpacing = 12.dp
         val activeLineShiftPx = with(density) { -3.dp.toPx() }
         val lineHeights = remember(lyrics) {
             mutableStateListOf<Int>().apply {
@@ -2622,7 +2619,7 @@ private fun LyricsPanel(
                 val activeHeight = lineHeights
                     .getOrNull(activeIndex)
                     ?.takeIf { it > 0 }
-                    ?: with(density) { 28.dp.toPx().roundToInt() }
+                    ?: with(density) { 52.dp.toPx().roundToInt() }
                 val target = activeTop + activeHeight / 2
                 scrollState.animateScrollTo(target.coerceIn(0, scrollState.maxValue))
             }
@@ -2695,10 +2692,15 @@ private fun LyricsMarqueeLine(
             .clipToBounds()
     ) {
         val viewportWidthPx = constraints.maxWidth.toFloat()
+        val leftInsetPx = with(density) { 12.dp.toPx() }
         var lineWidthPx by remember(text) { mutableFloatStateOf(0f) }
         val effectiveLineWidthPx = lineWidthPx * if (active) 1.3f else 1f
-        val hiddenDistancePx = (effectiveLineWidthPx - viewportWidthPx).coerceAtLeast(0f)
+        val hiddenDistancePx = (effectiveLineWidthPx + leftInsetPx - viewportWidthPx)
+            .coerceAtLeast(0f)
         val marqueeOffset = remember(text) { Animatable(0f) }
+        val leftFadeProgress = with(density) {
+            ((-marqueeOffset.value - 8.dp.toPx()) / 18.dp.toPx()).coerceIn(0f, 1f)
+        }
         val lineScale by animateFloatAsState(
             targetValue = if (active) 1.3f else 1f,
             animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
@@ -2737,10 +2739,13 @@ private fun LyricsMarqueeLine(
         Box(
             Modifier
                 .fillMaxWidth()
-                .padding(vertical = 5.dp)
+                .padding(vertical = 12.dp)
                 .then(
                     if (hiddenDistancePx > 1f) {
-                        Modifier.lyricsHorizontalFade(edgeWidth = 28.dp)
+                        Modifier.lyricsHorizontalFade(
+                            edgeWidth = 28.dp,
+                            leftFadeProgress = leftFadeProgress
+                        )
                     } else {
                         Modifier
                     }
@@ -2750,7 +2755,7 @@ private fun LyricsMarqueeLine(
                 text,
                 modifier = Modifier
                     .graphicsLayer {
-                        translationX = marqueeOffset.value + lineShift
+                        translationX = leftInsetPx + marqueeOffset.value + lineShift
                         scaleX = lineScale
                         scaleY = lineScale
                         transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
@@ -2794,7 +2799,10 @@ private fun Modifier.lyricsVerticalFade(edgeHeight: Dp): Modifier =
         }
     }
 
-private fun Modifier.lyricsHorizontalFade(edgeWidth: Dp): Modifier =
+private fun Modifier.lyricsHorizontalFade(
+    edgeWidth: Dp,
+    leftFadeProgress: Float
+): Modifier =
     graphicsLayer {
         compositingStrategy = CompositingStrategy.Offscreen
     }.drawWithContent {
@@ -2805,7 +2813,7 @@ private fun Modifier.lyricsHorizontalFade(edgeWidth: Dp): Modifier =
             drawRect(
                 brush = Brush.horizontalGradient(
                     colorStops = arrayOf(
-                        0f to Color.Transparent,
+                        0f to Color.Black.copy(alpha = 1f - leftFadeProgress.coerceIn(0f, 1f)),
                         edgeStop to Color.Black,
                         (1f - edgeStop) to Color.Black,
                         1f to Color.Transparent
