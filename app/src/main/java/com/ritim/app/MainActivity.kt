@@ -6,11 +6,16 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,6 +23,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -28,15 +35,24 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
@@ -59,6 +75,7 @@ fun RitimApp() {
         drawContent()
     }
     var selectedTabIndex by rememberSaveable { mutableStateOf(0) }
+    var activePageIndex by rememberSaveable { mutableStateOf(0) }
 
     Box(
         Modifier
@@ -66,15 +83,19 @@ fun RitimApp() {
             .background(pageBackground)
     ) {
         RitimPageBackground(
-            selectedTabIndex = selectedTabIndex,
+            pageIndex = activePageIndex,
             modifier = Modifier
                 .fillMaxSize()
                 .layerBackdrop(backdrop)
         )
 
-        RitimBottomBar(
+        RitimBottomControls(
             selectedTabIndex = selectedTabIndex,
-            onTabSelected = { selectedTabIndex = it },
+            onTabSelected = {
+                selectedTabIndex = it
+                activePageIndex = it
+            },
+            onSearchSelected = { activePageIndex = 3 },
             backdrop = backdrop,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
@@ -83,25 +104,28 @@ fun RitimApp() {
 
 @Composable
 private fun RitimPageBackground(
-    selectedTabIndex: Int,
+    pageIndex: Int,
     modifier: Modifier = Modifier
 ) {
-    val targetIndex = selectedTabIndex.coerceIn(0, 2)
+    val targetIndex = pageIndex.coerceIn(0, 3)
     var currentIndex by remember { mutableIntStateOf(targetIndex) }
     var previousIndex by remember { mutableIntStateOf(targetIndex) }
     var direction by remember { mutableIntStateOf(0) }
+    var searchTransition by remember { mutableStateOf(false) }
     val progress = remember { Animatable(1f) }
 
     LaunchedEffect(targetIndex) {
         if (targetIndex != currentIndex) {
+            val isSearchTransition = targetIndex == 3 || currentIndex == 3
             previousIndex = currentIndex
             direction = if (targetIndex > currentIndex) 1 else -1
+            searchTransition = isSearchTransition
             currentIndex = targetIndex
             progress.snapTo(0f)
             progress.animateTo(
                 targetValue = 1f,
                 animationSpec = tween(
-                    durationMillis = 340,
+                    durationMillis = if (isSearchTransition) 360 else 380,
                     easing = FastOutSlowInEasing
                 )
             )
@@ -110,25 +134,66 @@ private fun RitimPageBackground(
 
     Box(modifier) {
         if (progress.value < 1f) {
-            PageBackgroundLayer(
-                visual = pageVisual(previousIndex),
+            PageLayer(
+                pageIndex = previousIndex,
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        alpha = 1f - progress.value
-                        translationX = -direction * size.width * 0.035f * progress.value
+                        if (searchTransition) {
+                            alpha = 1f - progress.value
+                            translationY = if (previousIndex == 3) {
+                                size.height * 0.05f * progress.value
+                            } else {
+                                -size.height * 0.018f * progress.value
+                            }
+                            scaleX = 1f - 0.01f * progress.value
+                            scaleY = 1f - 0.01f * progress.value
+                        } else {
+                            alpha = 1f - progress.value
+                            translationX = -direction * size.width * 0.11f * progress.value
+                            scaleX = 1f + 0.006f * progress.value
+                            scaleY = 1f + 0.006f * progress.value
+                        }
                     }
             )
         }
-        PageBackgroundLayer(
-            visual = pageVisual(currentIndex),
+        PageLayer(
+            pageIndex = currentIndex,
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
                     val remaining = 1f - progress.value
-                    alpha = 0.62f + 0.38f * progress.value
-                    translationX = direction * size.width * 0.045f * remaining
+                    if (searchTransition) {
+                        alpha = 0.15f + 0.85f * progress.value
+                        translationY = if (currentIndex == 3) {
+                            size.height * 0.08f * remaining
+                        } else {
+                            -size.height * 0.035f * remaining
+                        }
+                        scaleX = 0.985f + 0.015f * progress.value
+                        scaleY = 0.985f + 0.015f * progress.value
+                    } else {
+                        alpha = 0.18f + 0.82f * progress.value
+                        translationX = direction * size.width * 0.13f * remaining
+                        scaleX = 0.992f + 0.008f * progress.value
+                        scaleY = 0.992f + 0.008f * progress.value
+                    }
                 }
+        )
+    }
+}
+
+@Composable
+private fun PageLayer(
+    pageIndex: Int,
+    modifier: Modifier = Modifier
+) {
+    if (pageIndex == 3) {
+        Box(modifier.background(Color.White))
+    } else {
+        PageBackgroundLayer(
+            visual = pageVisual(pageIndex),
+            modifier = modifier
         )
     }
 }
@@ -210,67 +275,252 @@ private data class PageVisual(
 )
 
 @Composable
-private fun RitimBottomBar(
+private fun RitimBottomControls(
     selectedTabIndex: Int,
     onTabSelected: (Int) -> Unit,
+    onSearchSelected: () -> Unit,
     backdrop: Backdrop,
     modifier: Modifier = Modifier
 ) {
     val accentColor = Color(0xFF0088FF)
     val containerColor = Color(0xFFFAFAFA).copy(0.4f)
     val navHeight = 62.dp
+    val playerHeight = 56.dp
 
-    Row(
+    Column(
         modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
-            .height(navHeight),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        LiquidBottomTabs(
-            selectedTabIndex = { selectedTabIndex },
-            onTabSelected = onTabSelected,
+        MiniPlayerBar(
             backdrop = backdrop,
-            tabsCount = 3,
-            accentColor = accentColor,
-            blurRadius = 8.dp,
-            refractionHeight = 24.dp,
-            refractionAmount = 24.dp,
             containerColor = containerColor,
-            containerHeight = navHeight,
-            focusHeight = 54.dp,
-            modifier = Modifier.weight(1f)
+            height = playerHeight,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(navHeight),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            listOf("主页", "库", "我的").forEachIndexed { index, label ->
-                LiquidBottomTab(
-                    onClick = { onTabSelected(index) },
-                    selected = selectedTabIndex == index,
-                    label = label
+            LiquidBottomTabs(
+                selectedTabIndex = { selectedTabIndex },
+                onTabSelected = onTabSelected,
+                backdrop = backdrop,
+                tabsCount = 3,
+                accentColor = accentColor,
+                blurRadius = 8.dp,
+                refractionHeight = 24.dp,
+                refractionAmount = 24.dp,
+                containerColor = containerColor,
+                containerHeight = navHeight,
+                focusHeight = 54.dp,
+                modifier = Modifier.weight(1f)
+            ) {
+                listOf("主页", "库", "我的").forEachIndexed { index, label ->
+                    LiquidBottomTab(
+                        onClick = { onTabSelected(index) },
+                        selected = selectedTabIndex == index,
+                        label = label
+                    )
+                }
+            }
+
+            LiquidButton(
+                onClick = onSearchSelected,
+                backdrop = backdrop,
+                modifier = Modifier
+                    .size(navHeight)
+                    .semantics { contentDescription = "搜索" },
+                surfaceColor = containerColor,
+                blurRadius = 8.dp,
+                refractionHeight = 18.dp,
+                refractionAmount = 22.dp,
+                height = navHeight,
+                horizontalPadding = 0.dp,
+                pressScale = 0.96f
+            ) {
+                SearchGlyph(
+                    modifier = Modifier.size(24.dp),
+                    color = Color(0xFF1E1E1E)
                 )
             }
         }
+    }
+}
 
-        LiquidButton(
-            onClick = {},
-            backdrop = backdrop,
-            modifier = Modifier
-                .size(navHeight)
-                .semantics { contentDescription = "搜索" },
-            surfaceColor = containerColor,
-            blurRadius = 8.dp,
-            refractionHeight = 18.dp,
-            refractionAmount = 22.dp,
-            height = navHeight,
-            horizontalPadding = 0.dp,
-            pressScale = 0.96f
+@Composable
+private fun MiniPlayerBar(
+    backdrop: Backdrop,
+    containerColor: Color,
+    height: Dp,
+    modifier: Modifier = Modifier
+) {
+    var playing by rememberSaveable { mutableStateOf(false) }
+
+    LiquidStaticBar(
+        backdrop = backdrop,
+        modifier = modifier,
+        surfaceColor = containerColor,
+        height = height,
+        startPadding = 32.dp,
+        endPadding = 12.dp,
+        blurRadius = 8.dp,
+        refractionHeight = 18.dp,
+        refractionAmount = 22.dp
+    ) {
+        Box(
+            Modifier
+                .size(36.dp)
+                .shadow(4.dp, RoundedCornerShape(8.dp), clip = false)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFFD8E8FF))
+        )
+
+        Column(
+            Modifier
+                .height(36.dp)
+                .weight(1f),
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
-            SearchGlyph(
-                modifier = Modifier.size(24.dp),
+            BasicText(
+                "Ritim Draft",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = TextStyle(
+                    color = Color(0xFF171A1D),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            )
+            BasicText(
+                "Liquid preview",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = TextStyle(
+                    color = Color(0xFF687076),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Normal
+                )
+            )
+        }
+
+        MiniIconButton(
+            contentDescription = if (playing) "暂停" else "播放",
+            onClick = { playing = !playing }
+        ) {
+            PlayPauseGlyph(
+                playing = playing,
+                modifier = Modifier.size(20.dp),
                 color = Color(0xFF1E1E1E)
             )
         }
+
+        MiniIconButton(
+            contentDescription = "下一曲",
+            onClick = {}
+        ) {
+            NextGlyph(
+                modifier = Modifier.size(21.dp),
+                color = Color(0xFF1E1E1E)
+            )
+        }
+    }
+}
+
+@Composable
+private fun MiniIconButton(
+    contentDescription: String,
+    onClick: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 1.08f else 1f,
+        animationSpec = tween(durationMillis = 120)
+    )
+
+    Box(
+        Modifier
+            .size(34.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .semantics { this.contentDescription = contentDescription }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                role = Role.Button,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun PlayPauseGlyph(
+    playing: Boolean,
+    modifier: Modifier = Modifier,
+    color: Color = Color(0xFF111315)
+) {
+    Canvas(modifier) {
+        if (playing) {
+            val strokeWidth = 4.dp.toPx()
+            drawLine(
+                color = color,
+                start = Offset(size.width * 0.36f, size.height * 0.24f),
+                end = Offset(size.width * 0.36f, size.height * 0.76f),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round
+            )
+            drawLine(
+                color = color,
+                start = Offset(size.width * 0.64f, size.height * 0.24f),
+                end = Offset(size.width * 0.64f, size.height * 0.76f),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round
+            )
+        } else {
+            val path = Path().apply {
+                moveTo(size.width * 0.34f, size.height * 0.22f)
+                lineTo(size.width * 0.34f, size.height * 0.78f)
+                lineTo(size.width * 0.78f, size.height * 0.50f)
+                close()
+            }
+            drawPath(path, color)
+        }
+    }
+}
+
+@Composable
+private fun NextGlyph(
+    modifier: Modifier = Modifier,
+    color: Color = Color(0xFF111315)
+) {
+    Canvas(modifier) {
+        val first = Path().apply {
+            moveTo(size.width * 0.16f, size.height * 0.24f)
+            lineTo(size.width * 0.16f, size.height * 0.76f)
+            lineTo(size.width * 0.48f, size.height * 0.50f)
+            close()
+        }
+        val second = Path().apply {
+            moveTo(size.width * 0.48f, size.height * 0.24f)
+            lineTo(size.width * 0.48f, size.height * 0.76f)
+            lineTo(size.width * 0.80f, size.height * 0.50f)
+            close()
+        }
+        drawPath(first, color)
+        drawPath(second, color)
     }
 }
 

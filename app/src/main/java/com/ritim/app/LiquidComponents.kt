@@ -167,6 +167,40 @@ fun LiquidButton(
 }
 
 @Composable
+fun LiquidStaticBar(
+    backdrop: Backdrop,
+    modifier: Modifier = Modifier,
+    surfaceColor: Color = Color(0xFFFAFAFA).copy(0.4f),
+    blurRadius: Dp = 8.dp,
+    refractionHeight: Dp = 18.dp,
+    refractionAmount: Dp = 22.dp,
+    height: Dp = 56.dp,
+    startPadding: Dp = 16.dp,
+    endPadding: Dp = 14.dp,
+    content: @Composable RowScope.() -> Unit
+) {
+    Row(
+        modifier
+            .drawBackdrop(
+                backdrop = backdrop,
+                shape = { Capsule() },
+                effects = {
+                    vibrancy()
+                    blur(blurRadius.toPx())
+                    lens(refractionHeight.toPx(), refractionAmount.toPx())
+                },
+                onDrawSurface = { drawRect(surfaceColor) }
+            )
+            .height(height)
+            .fillMaxWidth()
+            .padding(start = startPadding, end = endPadding),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        content = content
+    )
+}
+
+@Composable
 fun LiquidBottomTabs(
     selectedTabIndex: () -> Int,
     onTabSelected: (index: Int) -> Unit,
