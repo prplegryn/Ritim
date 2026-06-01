@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ContentUris
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.AudioAttributes
 import android.media.MediaMetadataRetriever
@@ -95,6 +96,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
 import kotlin.math.max
 
 class MainActivity : ComponentActivity() {
@@ -740,16 +744,26 @@ private data class CoverImageState(
     val loaded: Boolean
 )
 
+private fun initialCoverState(context: Context, song: SongSample): CoverImageState {
+    val memoryCover = cachedCoverImage(song.id)
+    if (memoryCover != null || hasCachedCoverImage(song.id)) {
+        return CoverImageState(image = memoryCover, loaded = true)
+    }
+    val diskCover = loadCachedCoverBitmap(context, song.albumId, song.contentUri)?.asImageBitmap()
+    if (diskCover != null) {
+        synchronized(coverImageCache) {
+            coverImageCache[song.id] = diskCover
+        }
+        return CoverImageState(image = diskCover, loaded = true)
+    }
+    return CoverImageState(image = null, loaded = false)
+}
+
 @Composable
 private fun rememberSongCover(song: SongSample): CoverImageState {
     val context = LocalContext.current
     var coverState by remember(song.id) {
-        mutableStateOf(
-            CoverImageState(
-                image = cachedCoverImage(song.id),
-                loaded = hasCachedCoverImage(song.id)
-            )
-        )
+        mutableStateOf(initialCoverState(context, song))
     }
 
     LaunchedEffect(context, song.id, song.contentUri) {
@@ -790,34 +804,127 @@ private suspend fun loadSongCoverImage(
     albumId: Long
 ): ImageBitmap? =
     withContext(Dispatchers.IO) {
-        val embeddedImage = if (uri == null) null else runCatching {
+        val cachedCover = loadCachedCoverBitmap(context, albumId, uri)
+        if (cachedCover != null) return@withContext cachedCover.asImageBitmap()
+
+        val embeddedBitmap = if (uri == null) null else runCatching {
             val retriever = MediaMetadataRetriever()
             try {
                 retriever.setDataSource(context, uri)
                 val data = retriever.embeddedPicture ?: return@runCatching null
-                BitmapFactory.decodeByteArray(data, 0, data.size)?.asImageBitmap()
+                BitmapFactory.decodeByteArray(data, 0, data.size)
             } finally {
                 runCatching { retriever.release() }
             }
         }.getOrNull()
 
-        embeddedImage ?: loadAlbumArtImage(context, albumId)
+        val bitmap = embeddedBitmap ?: loadAlbumArtBitmap(context, albumId)
+        if (bitmap != null) {
+            saveCoverBitmap(context, albumId, uri, bitmap)
+        }
+        bitmap?.asImageBitmap()
     }
 
 private fun loadAlbumArtImage(context: Context, albumId: Long): ImageBitmap? {
     if (albumId <= 0L) return null
+    return loadAlbumArtBitmap(context, albumId)?.asImageBitmap()
+}
+
+private fun loadAlbumArtBitmap(context: Context, albumId: Long): Bitmap? {
+    if (albumId <= 0L) return null
     val albumArtUri = ContentUris.withAppendedId(albumArtBaseUri, albumId)
     return runCatching {
         context.contentResolver.openInputStream(albumArtUri)?.use { stream ->
-            BitmapFactory.decodeStream(stream)?.asImageBitmap()
+            BitmapFactory.decodeStream(stream)
         }
     }.getOrNull()
 }
 
+private fun loadCachedCoverBitmap(context: Context, albumId: Long, uri: Uri?): Bitmap? {
+    val file = coverCacheFile(context, albumId, uri)
+    return if (file.exists()) {
+        runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
+    } else {
+        null
+    }
+}
+
+private fun saveCoverBitmap(context: Context, albumId: Long, uri: Uri?, bitmap: Bitmap) {
+    runCatching {
+        val file = coverCacheFile(context, albumId, uri)
+        file.parentFile?.mkdirs()
+        file.outputStream().use { stream ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 88, stream)
+        }
+    }
+}
+
+private fun coverCacheFile(context: Context, albumId: Long, uri: Uri?): File {
+    val rawKey = if (albumId > 0L) {
+        "album_$albumId"
+    } else {
+        "song_${stableSongSeed(uri?.toString().orEmpty())}"
+    }
+    return File(File(context.cacheDir, "covers"), "$rawKey.jpg")
+}
+
+private suspend fun saveCachedMusicIndex(context: Context, songs: List<SongSample>) =
+    withContext(Dispatchers.IO) {
+        runCatching {
+            val array = JSONArray()
+            songs.forEach { song ->
+                array.put(
+                    JSONObject()
+                        .put("id", song.id)
+                        .put("title", song.title)
+                        .put("artist", song.artist)
+                        .put("seed", song.seed)
+                        .put("albumId", song.albumId)
+                        .put("durationMs", song.durationMs)
+                        .put("dateAddedSeconds", song.dateAddedSeconds)
+                        .put("contentUri", song.contentUri?.toString())
+                )
+            }
+            musicIndexFile(context).writeText(array.toString())
+        }
+    }
+
+private fun loadCachedMusicIndex(context: Context): List<SongSample> =
+    runCatching {
+        val file = musicIndexFile(context)
+        if (!file.exists()) return@runCatching emptyList()
+        val array = JSONArray(file.readText())
+        buildList {
+            for (index in 0 until array.length()) {
+                val item = array.getJSONObject(index)
+                val seed = item.optInt("seed", 0)
+                val uriText = item.optString("contentUri").takeIf { it.isNotBlank() && it != "null" }
+                add(
+                    SongSample(
+                        id = item.optLong("id"),
+                        title = item.optString("title", "未知歌曲"),
+                        artist = item.optString("artist", "未知艺术家"),
+                        colors = paletteForSeed(seed),
+                        seed = seed,
+                        albumId = item.optLong("albumId"),
+                        durationMs = item.optLong("durationMs"),
+                        dateAddedSeconds = item.optLong("dateAddedSeconds"),
+                        contentUri = uriText?.let(Uri::parse)
+                    )
+                )
+            }
+        }
+    }.getOrDefault(emptyList())
+
+private fun musicIndexFile(context: Context): File =
+    File(context.filesDir, "music_index.json")
+
 @Composable
 private fun rememberMusicFolderSongs(): List<SongSample> {
     val context = LocalContext.current
-    var songs by remember { mutableStateOf<List<SongSample>>(emptyList()) }
+    var songs by remember {
+        mutableStateOf(loadCachedMusicIndex(context))
+    }
     var permissionGranted by remember { mutableStateOf(hasAudioReadPermission(context)) }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -835,7 +942,11 @@ private fun rememberMusicFolderSongs(): List<SongSample> {
 
     LaunchedEffect(context, permissionGranted) {
         if (permissionGranted) {
-            songs = loadMusicFolderSongs(context)
+            val loadedSongs = loadMusicFolderSongs(context)
+            if (loadedSongs.isNotEmpty()) {
+                songs = loadedSongs
+                saveCachedMusicIndex(context, loadedSongs)
+            }
         }
     }
 
@@ -1379,6 +1490,7 @@ private fun PlayerCardPage(
             maxWidth - 56.dp,
             if (compactPlayerLayout) 254.dp else 304.dp
         )
+        val controlGap = if (compactPlayerLayout) 26.dp else 34.dp
 
         Box(
             Modifier
@@ -1411,7 +1523,7 @@ private fun PlayerCardPage(
                     .statusBarsPadding()
                     .navigationBarsPadding()
                     .padding(horizontal = 28.dp)
-                    .padding(top = 14.dp, bottom = 30.dp),
+                    .padding(top = 14.dp, bottom = controlGap),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Box(
@@ -1421,7 +1533,7 @@ private fun PlayerCardPage(
                         .background(Color.White.copy(alpha = 0.42f))
                 )
 
-                Spacer(Modifier.height(if (compactPlayerLayout) 28.dp else 42.dp))
+                Spacer(Modifier.weight(1f))
 
                 SolidCoverArt(
                     song = song,
@@ -1430,7 +1542,7 @@ private fun PlayerCardPage(
                         .clip(RoundedCornerShape(16.dp))
                 )
 
-                Spacer(Modifier.height(if (compactPlayerLayout) 28.dp else 38.dp))
+                Spacer(Modifier.height(controlGap))
 
                 PlayerLine(
                     progress = playbackProgress,
@@ -1438,7 +1550,7 @@ private fun PlayerCardPage(
                     height = 4.dp
                 )
 
-                Spacer(Modifier.height(if (compactPlayerLayout) 24.dp else 32.dp))
+                Spacer(Modifier.height(controlGap))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1480,7 +1592,7 @@ private fun PlayerCardPage(
                     }
                 }
 
-                Spacer(Modifier.height(if (compactPlayerLayout) 24.dp else 30.dp))
+                Spacer(Modifier.height(controlGap))
 
                 PlayerLine(
                     progress = 0.68f,
@@ -1488,7 +1600,7 @@ private fun PlayerCardPage(
                     height = 3.dp
                 )
 
-                Spacer(Modifier.height(if (compactPlayerLayout) 22.dp else 28.dp))
+                Spacer(Modifier.height(controlGap))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1518,8 +1630,6 @@ private fun PlayerCardPage(
                         )
                     }
                 }
-
-                Spacer(Modifier.weight(1f))
             }
 
             Box(
