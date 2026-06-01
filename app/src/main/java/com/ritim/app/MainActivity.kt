@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.net.Uri
@@ -106,6 +107,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -151,7 +153,9 @@ fun RitimApp() {
     val playbackRuntimeTracker = remember { PlaybackRuntimeTracker() }
     var seekRequestId by remember { mutableIntStateOf(0) }
     var seekRequest by remember { mutableStateOf<SeekRequest?>(null) }
-    var playerVolume by rememberSaveable { mutableStateOf(0.68f) }
+    var playerVolume by remember(context) {
+        mutableFloatStateOf(systemMusicVolumeProgress(context))
+    }
     var favoriteSongIds by remember(context) {
         mutableStateOf(loadMusicLibraryIndex(context).favoriteSongIds)
     }
@@ -208,7 +212,6 @@ fun RitimApp() {
         song = currentSong,
         playing = playing,
         seekRequest = seekRequest,
-        volume = playerVolume,
         onPlayingChange = { playing = it },
         onProgressChange = {
             playbackRuntimeTracker.progress = it
@@ -247,6 +250,7 @@ fun RitimApp() {
             onSearchSelected = { activePageIndex = 3 },
             onMiniPlayerSelected = {
                 playbackProgress = playbackRuntimeTracker.progress
+                playerVolume = systemMusicVolumeProgress(context)
                 playerBackdropProgress = 0f
                 playerCardVisible = true
             },
@@ -274,7 +278,7 @@ fun RitimApp() {
                 favorite = favoriteSongIds.contains(currentSong.id),
                 onPlayingChange = { playing = it },
                 onSeek = requestSeek,
-                onVolumeChange = { playerVolume = it.coerceIn(0f, 1f) },
+                onVolumeChange = { playerVolume = setSystemMusicVolumeProgress(context, it) },
                 onFavoriteToggle = { toggleFavorite(currentSong) },
                 onPrevious = onPreviousSelected,
                 onNext = { selectRelativeSong(1) },
@@ -294,7 +298,6 @@ private fun AudioPlaybackEffect(
     song: SongSample,
     playing: Boolean,
     seekRequest: SeekRequest?,
-    volume: Float,
     onPlayingChange: (Boolean) -> Unit,
     onProgressChange: (Float) -> Unit,
     onPositionChange: (Long) -> Unit
@@ -340,7 +343,6 @@ private fun AudioPlaybackEffect(
         val existingPlayer = playerHolder.value
         if (existingPlayer != null) {
             runCatching {
-                existingPlayer.setOutputVolume(volume)
                 existingPlayer.start()
             }.onFailure {
                 existingPlayer.release()
@@ -365,7 +367,6 @@ private fun AudioPlaybackEffect(
 
         playerHolder.value = player
         preparedSongId = song.id
-        player.setOutputVolume(volume)
         seekRequest?.let { request ->
             player.seekToProgress(request.progress)?.let { targetPosition ->
                 onProgressChange(request.progress.coerceIn(0f, 1f))
@@ -403,10 +404,6 @@ private fun AudioPlaybackEffect(
             onProgressChange(0f)
             onPositionChange(0L)
         }
-    }
-
-    LaunchedEffect(volume) {
-        playerHolder.value?.setOutputVolume(volume)
     }
 
     LaunchedEffect(song.id, seekRequest?.id) {
@@ -473,9 +470,27 @@ private fun MediaPlayer.seekToProgress(progress: Float): Int? =
         }
     }.getOrNull()
 
-private fun MediaPlayer.setOutputVolume(volume: Float) {
-    val safeVolume = volume.coerceIn(0f, 1f)
-    runCatching { setVolume(safeVolume, safeVolume) }
+private fun systemMusicVolumeProgress(context: Context): Float {
+    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        ?: return 0f
+    val maxVolume = max(1, audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC))
+    return audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        .toFloat()
+        .div(maxVolume.toFloat())
+        .coerceIn(0f, 1f)
+}
+
+private fun setSystemMusicVolumeProgress(context: Context, progress: Float): Float {
+    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        ?: return progress.coerceIn(0f, 1f)
+    val maxVolume = max(1, audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC))
+    val targetVolume = (progress.coerceIn(0f, 1f) * maxVolume)
+        .roundToInt()
+        .coerceIn(0, maxVolume)
+    runCatching {
+        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVolume, 0)
+    }
+    return systemMusicVolumeProgress(context)
 }
 
 private fun createPreparedMediaPlayer(prepareBlock: MediaPlayer.() -> Unit): MediaPlayer? {
@@ -1880,7 +1895,8 @@ private fun PlayerCardPage(
                         PlayerIconButton(
                             contentDescription = "上一曲",
                             size = sideControlSize,
-                            onClick = onPrevious
+                            onClick = onPrevious,
+                            pressScale = 0.95f
                         ) {
                             PreviousGlyph(
                                 modifier = Modifier.size(sideControlIconSize),
@@ -1891,7 +1907,8 @@ private fun PlayerCardPage(
                         PlayerIconButton(
                             contentDescription = if (playing) "暂停" else "播放",
                             size = mainControlSize,
-                            onClick = { onPlayingChange(!playing) }
+                            onClick = { onPlayingChange(!playing) },
+                            pressScale = 0.96f
                         ) {
                             PlayPauseGlyph(
                                 playing = playing,
@@ -1903,7 +1920,8 @@ private fun PlayerCardPage(
                         PlayerIconButton(
                             contentDescription = "下一曲",
                             size = sideControlSize,
-                            onClick = onNext
+                            onClick = onNext,
+                            pressScale = 0.95f
                         ) {
                             NextGlyph(
                                 modifier = Modifier.size(sideControlIconSize),
@@ -2129,7 +2147,7 @@ private fun PlayerSongInfoRow(
         }
 
         Row(
-            horizontalArrangement = Arrangement.spacedBy(0.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             PlayerIconButton(
@@ -2426,7 +2444,7 @@ private fun StarGlyph(
             drawPath(
                 path = path,
                 color = color,
-                style = Stroke(width = 2.1.dp.toPx(), cap = StrokeCap.Round)
+                style = Stroke(width = 1.25.dp.toPx(), cap = StrokeCap.Round)
             )
         }
     }
@@ -2439,7 +2457,7 @@ private fun MoreGlyph(
 ) {
     Canvas(modifier) {
         val radius = size.minDimension * 0.085f
-        listOf(0.26f, 0.50f, 0.74f).forEach { x ->
+        listOf(0.22f, 0.50f, 0.78f).forEach { x ->
             drawCircle(
                 color = color,
                 radius = radius,
@@ -2496,31 +2514,33 @@ private fun PlayPauseGlyph(
     modifier: Modifier = Modifier,
     color: Color = Color(0xFF111315)
 ) {
+    val pauseProgress by animateFloatAsState(
+        targetValue = if (playing) 1f else 0f,
+        animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing)
+    )
     Canvas(modifier) {
-        if (playing) {
-            val strokeWidth = size.minDimension * 0.16f
-            drawLine(
-                color = color,
-                start = Offset(size.width * 0.36f, size.height * 0.24f),
-                end = Offset(size.width * 0.36f, size.height * 0.76f),
-                strokeWidth = strokeWidth,
-                cap = StrokeCap.Round
-            )
-            drawLine(
-                color = color,
-                start = Offset(size.width * 0.64f, size.height * 0.24f),
-                end = Offset(size.width * 0.64f, size.height * 0.76f),
-                strokeWidth = strokeWidth,
-                cap = StrokeCap.Round
-            )
-        } else {
+        val playAlpha = 1f - pauseProgress
+        if (playAlpha > 0.01f) {
             val path = Path().apply {
                 moveTo(size.width * 0.34f, size.height * 0.22f)
                 lineTo(size.width * 0.34f, size.height * 0.78f)
                 lineTo(size.width * 0.78f, size.height * 0.50f)
                 close()
             }
-            drawPath(path, color)
+            drawPath(path, color.copy(alpha = color.alpha * playAlpha))
+        }
+
+        if (pauseProgress > 0.01f) {
+            drawRect(
+                color = color.copy(alpha = color.alpha * pauseProgress),
+                topLeft = Offset(size.width * 0.33f, size.height * 0.24f),
+                size = Size(size.width * 0.12f, size.height * 0.52f)
+            )
+            drawRect(
+                color = color.copy(alpha = color.alpha * pauseProgress),
+                topLeft = Offset(size.width * 0.55f, size.height * 0.24f),
+                size = Size(size.width * 0.12f, size.height * 0.52f)
+            )
         }
     }
 }
