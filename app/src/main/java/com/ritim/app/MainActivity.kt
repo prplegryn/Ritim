@@ -30,7 +30,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -1829,12 +1828,24 @@ private fun MiniPlayerBar(
                     shape = RoundedCornerShape(9.dp),
                     clip = false
                 )
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    role = Role.Button,
+                    onClick = onClick
+                )
         )
 
         Column(
             Modifier
                 .height(36.dp)
-                .weight(1f),
+                .weight(1f)
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    role = Role.Button,
+                    onClick = onClick
+                ),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
             BasicText(
@@ -2105,17 +2116,8 @@ private fun PlayerCardPage(
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .fillMaxHeight(0.52f)
+                    .fillMaxHeight(0.62f)
                     .align(Alignment.TopCenter)
-                    .pointerInput(lyricsVisible) {
-                        if (!lyricsVisible) {
-                            detectTapGestures(
-                                onDoubleTap = {
-                                    onLyricsVisibleChange(true)
-                                }
-                            )
-                        }
-                    }
                     .playerDismissDrag()
             )
 
@@ -2149,15 +2151,6 @@ private fun PlayerCardPage(
                             .size(coverSize)
                             .align(Alignment.TopCenter)
                             .playerDismissDrag(enabled = !lyricsVisible)
-                            .pointerInput(song.id, lyricsVisible) {
-                                if (!lyricsVisible) {
-                                    detectTapGestures(
-                                        onDoubleTap = {
-                                            onLyricsVisibleChange(true)
-                                        }
-                                    )
-                                }
-                            }
                             .graphicsLayer {
                                 val scale = 1f - (1f - lyricsCoverScale) * lyricsProgress
                                 scaleX = scale
