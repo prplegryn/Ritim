@@ -75,6 +75,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
@@ -227,6 +228,7 @@ fun RitimApp() {
     var activePageIndex by rememberSaveable { mutableStateOf(0) }
     var playerCardVisible by rememberSaveable { mutableStateOf(false) }
     var playerLyricsVisible by rememberSaveable { mutableStateOf(false) }
+    var playerDismissRequestId by remember { mutableIntStateOf(0) }
     var playerBackdropProgress by remember { mutableFloatStateOf(0f) }
     val pageScale = 1f - 0.035f * playerBackdropProgress
     val blurRadius = 14f * playerBackdropProgress
@@ -245,18 +247,15 @@ fun RitimApp() {
         onPositionChange = { playbackRuntimeTracker.positionMs = it }
     )
 
-    BackHandler(
-        enabled = playerCardVisible || activePageIndex == 3 || selectedTabIndex != 0
-    ) {
+    BackHandler(enabled = true) {
         when {
             playerCardVisible -> {
-                playerBackdropProgress = 0f
-                playerCardVisible = false
+                playerDismissRequestId += 1
             }
             activePageIndex == 3 -> {
                 activePageIndex = selectedTabIndex
             }
-            selectedTabIndex != 0 -> {
+            activePageIndex != 0 || selectedTabIndex != 0 -> {
                 selectedTabIndex = 0
                 activePageIndex = 0
             }
@@ -318,6 +317,7 @@ fun RitimApp() {
                 volume = playerVolume,
                 favorite = favoriteSongIds.contains(currentSong.id),
                 lyricsVisible = playerLyricsVisible,
+                dismissRequestId = playerDismissRequestId,
                 onPlayingChange = { playing = it },
                 onSeek = requestSeek,
                 onVolumeChange = { playerVolume = setSystemMusicVolumeProgress(context, it) },
@@ -1927,6 +1927,7 @@ private fun PlayerCardPage(
     volume: Float,
     favorite: Boolean,
     lyricsVisible: Boolean,
+    dismissRequestId: Int,
     onPlayingChange: (Boolean) -> Unit,
     onSeek: (Float) -> Unit,
     onVolumeChange: (Float) -> Unit,
@@ -1957,6 +1958,17 @@ private fun PlayerCardPage(
             targetValue = 1f,
             animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing)
         )
+    }
+
+    LaunchedEffect(dismissRequestId) {
+        if (dismissRequestId > 0) {
+            progress.animateTo(
+                targetValue = 0f,
+                animationSpec = tween(durationMillis = 170, easing = FastOutSlowInEasing)
+            )
+            dragOffset.snapTo(0f)
+            onDismiss()
+        }
     }
 
     BoxWithConstraints(modifier) {
@@ -1992,12 +2004,69 @@ private fun PlayerCardPage(
         } else {
             0.dp
         }
+        val lyricsPanelEdgeInset = maxOf(0.dp, lyricsEdgeInset - 12.dp)
         val headerSpacer = if (compactPlayerLayout) 28.dp - coverLift else 42.dp - coverLift
-        val translationButtonTopOffset = 14.dp + 4.dp + headerSpacer + coverSize +
-            coverLift + controlsTopPadding + (if (compactPlayerLayout) 82.dp else 96.dp)
+        val translationButtonTopOffset = 14.dp + 4.dp + headerSpacer + coverSize + 16.dp
         val coverTranslationXPx = with(density) {
             12.dp.toPx() * lyricsProgress
         }
+        fun Modifier.playerDismissDrag(enabled: Boolean = true): Modifier =
+            if (!enabled) {
+                this
+            } else {
+                pointerInput(screenHeight) {
+                    detectDragGestures(
+                        onDragStart = {
+                            lastDownwardDrag = 0f
+                        },
+                        onDragEnd = {
+                            val shouldDismiss =
+                                dragOffset.value > screenHeight * 0.12f || lastDownwardDrag > 18f
+                            if (shouldDismiss) {
+                                scope.launch {
+                                    progress.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = tween(
+                                            durationMillis = 170,
+                                            easing = FastOutSlowInEasing
+                                        )
+                                    )
+                                    dragOffset.snapTo(0f)
+                                    onDismiss()
+                                }
+                            } else {
+                                scope.launch {
+                                    dragOffset.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = tween(
+                                            durationMillis = 140,
+                                            easing = FastOutSlowInEasing
+                                        )
+                                    )
+                                }
+                            }
+                        },
+                        onDragCancel = {
+                            scope.launch {
+                                dragOffset.animateTo(
+                                    targetValue = 0f,
+                                    animationSpec = tween(
+                                        durationMillis = 140,
+                                        easing = FastOutSlowInEasing
+                                    )
+                                )
+                            }
+                        },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            lastDownwardDrag = dragAmount.y
+                            scope.launch {
+                                dragOffset.snapTo(max(0f, dragOffset.value + dragAmount.y))
+                            }
+                        }
+                    )
+                }
+            }
         SideEffect {
             onBackdropProgressChange(backdropProgress)
         }
@@ -2044,58 +2113,7 @@ private fun PlayerCardPage(
                             )
                         }
                     }
-                    .pointerInput(screenHeight) {
-                        detectDragGestures(
-                            onDragStart = {
-                                lastDownwardDrag = 0f
-                            },
-                            onDragEnd = {
-                                val shouldDismiss =
-                                    dragOffset.value > screenHeight * 0.12f || lastDownwardDrag > 18f
-                                if (shouldDismiss) {
-                                    scope.launch {
-                                        progress.animateTo(
-                                            targetValue = 0f,
-                                            animationSpec = tween(
-                                                durationMillis = 170,
-                                                easing = FastOutSlowInEasing
-                                            )
-                                        )
-                                        dragOffset.snapTo(0f)
-                                        onDismiss()
-                                    }
-                                } else {
-                                    scope.launch {
-                                        dragOffset.animateTo(
-                                            targetValue = 0f,
-                                            animationSpec = tween(
-                                                durationMillis = 140,
-                                                easing = FastOutSlowInEasing
-                                            )
-                                        )
-                                    }
-                                }
-                            },
-                            onDragCancel = {
-                                scope.launch {
-                                    dragOffset.animateTo(
-                                        targetValue = 0f,
-                                        animationSpec = tween(
-                                            durationMillis = 140,
-                                            easing = FastOutSlowInEasing
-                                        )
-                                    )
-                                }
-                            },
-                            onDrag = { change, dragAmount ->
-                                change.consume()
-                                lastDownwardDrag = dragAmount.y
-                                scope.launch {
-                                    dragOffset.snapTo(max(0f, dragOffset.value + dragAmount.y))
-                                }
-                            }
-                        )
-                    }
+                    .playerDismissDrag()
             )
 
             Column(
@@ -2127,6 +2145,16 @@ private fun PlayerCardPage(
                         modifier = Modifier
                             .size(coverSize)
                             .align(Alignment.TopCenter)
+                            .pointerInput(song.id, lyricsVisible) {
+                                if (!lyricsVisible) {
+                                    detectTapGestures(
+                                        onDoubleTap = {
+                                            onLyricsVisibleChange(true)
+                                        }
+                                    )
+                                }
+                            }
+                            .playerDismissDrag(enabled = !lyricsVisible)
                             .graphicsLayer {
                                 val scale = 1f - (1f - lyricsCoverScale) * lyricsProgress
                                 scaleX = scale
@@ -2157,7 +2185,7 @@ private fun PlayerCardPage(
                         activeIndex = activeLyricIndex,
                         currentPositionMs = currentPositionMs,
                         songDurationMs = song.durationMs,
-                        edgePadding = lyricsEdgeInset,
+                        edgePadding = lyricsPanelEdgeInset,
                         modifier = Modifier
                             .align(Alignment.BottomStart)
                             .fillMaxWidth()
@@ -2304,8 +2332,9 @@ private fun PlayerCardPage(
                     selected = translationActive,
                     onClick = { translationActive = !translationActive },
                     modifier = Modifier
-                        .align(Alignment.TopCenter)
                         .statusBarsPadding()
+                        .padding(start = 28.dp + lyricsEdgeInset)
+                        .align(Alignment.TopStart)
                         .offset(y = translationButtonTopOffset)
                         .graphicsLayer { alpha = lyricsProgress }
                 )
@@ -2477,6 +2506,7 @@ private fun TranslationPillButton(
     )
     Box(
         modifier
+            .size(38.dp)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -2486,7 +2516,7 @@ private fun TranslationPillButton(
                 if (selected) {
                     Color.White
                 } else {
-                    Color.White.copy(alpha = 0.16f)
+                    Color.Transparent
                 }
             )
             .clickable(
@@ -2494,18 +2524,58 @@ private fun TranslationPillButton(
                 indication = null,
                 role = Role.Button,
                 onClick = onClick
-            )
-            .padding(horizontal = 14.dp, vertical = 7.dp),
+            ),
         contentAlignment = Alignment.Center
     ) {
-        BasicText(
-            "翻译",
-            maxLines = 1,
-            style = TextStyle(
-                color = if (selected) Color(0xFF111315) else Color.White.copy(alpha = 0.78f),
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium
-            )
+        TranslationGlyph(
+            modifier = Modifier.size(20.dp),
+            color = if (selected) Color(0xFF111315) else Color.White.copy(alpha = 0.78f)
+        )
+    }
+}
+
+@Composable
+private fun TranslationGlyph(
+    modifier: Modifier = Modifier,
+    color: Color = Color.White
+) {
+    Canvas(modifier) {
+        val strokeWidth = 1.7.dp.toPx()
+        val corner = CornerRadius(3.5.dp.toPx(), 3.5.dp.toPx())
+        drawRoundRect(
+            color = color,
+            topLeft = Offset(size.width * 0.12f, size.height * 0.18f),
+            size = Size(size.width * 0.50f, size.height * 0.46f),
+            cornerRadius = corner,
+            style = Stroke(width = strokeWidth)
+        )
+        drawRoundRect(
+            color = color,
+            topLeft = Offset(size.width * 0.38f, size.height * 0.36f),
+            size = Size(size.width * 0.50f, size.height * 0.46f),
+            cornerRadius = corner,
+            style = Stroke(width = strokeWidth)
+        )
+        drawLine(
+            color = color,
+            start = Offset(size.width * 0.23f, size.height * 0.36f),
+            end = Offset(size.width * 0.52f, size.height * 0.36f),
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = color,
+            start = Offset(size.width * 0.52f, size.height * 0.58f),
+            end = Offset(size.width * 0.75f, size.height * 0.58f),
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = color,
+            start = Offset(size.width * 0.62f, size.height * 0.48f),
+            end = Offset(size.width * 0.68f, size.height * 0.70f),
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Round
         )
     }
 }
@@ -2658,6 +2728,7 @@ private fun LyricsPanel(
                         LyricsMarqueeLine(
                             text = line.text,
                             active = active,
+                            scrolling = active && currentPositionMs >= line.timeMs,
                             durationMs = lineDurationMs,
                             elapsedMs = (currentPositionMs - line.timeMs).coerceAtLeast(0L),
                             activeLineShiftPx = activeLineShiftPx,
@@ -2678,6 +2749,7 @@ private fun LyricsPanel(
 private fun LyricsMarqueeLine(
     text: String,
     active: Boolean,
+    scrolling: Boolean,
     durationMs: Long,
     elapsedMs: Long,
     activeLineShiftPx: Float,
@@ -2710,8 +2782,8 @@ private fun LyricsMarqueeLine(
             animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
         )
 
-        LaunchedEffect(active, text, hiddenDistancePx, durationMs) {
-            if (active && hiddenDistancePx > 1f) {
+        LaunchedEffect(scrolling, text, hiddenDistancePx, durationMs) {
+            if (scrolling && hiddenDistancePx > 1f) {
                 val edgeReserve = with(density) { 10.dp.toPx() }
                 val targetOffset = -(hiddenDistancePx + edgeReserve)
                 val elapsedProgress = elapsedMs.toFloat() / durationMs.toFloat()
@@ -2739,7 +2811,7 @@ private fun LyricsMarqueeLine(
         Box(
             Modifier
                 .fillMaxWidth()
-                .padding(vertical = 12.dp)
+                .padding(vertical = if (active) 14.dp else 6.dp)
                 .then(
                     if (hiddenDistancePx > 1f) {
                         Modifier.lyricsHorizontalFade(
