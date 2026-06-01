@@ -11,14 +11,17 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -35,13 +38,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
@@ -53,6 +59,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -65,6 +72,8 @@ import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import kotlinx.coroutines.launch
+import kotlin.math.max
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -85,6 +94,16 @@ fun RitimApp() {
     }
     var selectedTabIndex by rememberSaveable { mutableStateOf(0) }
     var activePageIndex by rememberSaveable { mutableStateOf(0) }
+    var playerCardVisible by rememberSaveable { mutableStateOf(false) }
+    var playerBackdropActive by rememberSaveable { mutableStateOf(false) }
+    val pageScale by animateFloatAsState(
+        targetValue = if (playerBackdropActive) 0.965f else 1f,
+        animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing)
+    )
+    val blurRadius by animateFloatAsState(
+        targetValue = if (playerBackdropActive) 14f else 0f,
+        animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing)
+    )
 
     Box(
         Modifier
@@ -95,6 +114,11 @@ fun RitimApp() {
             pageIndex = activePageIndex,
             modifier = Modifier
                 .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = pageScale
+                    scaleY = pageScale
+                }
+                .blur(blurRadius.dp)
                 .layerBackdrop(backdrop)
         )
 
@@ -105,9 +129,28 @@ fun RitimApp() {
                 activePageIndex = it
             },
             onSearchSelected = { activePageIndex = 3 },
+            onMiniPlayerSelected = {
+                playerBackdropActive = true
+                playerCardVisible = true
+            },
             backdrop = backdrop,
-            modifier = Modifier.align(Alignment.BottomCenter)
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .blur(blurRadius.dp)
         )
+
+        if (playerCardVisible) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.White.copy(alpha = if (playerBackdropActive) 0.30f else 0.08f))
+            )
+            PlayerCardPage(
+                onDismissStart = { playerBackdropActive = false },
+                onDismiss = { playerCardVisible = false },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     }
 }
 
@@ -278,21 +321,25 @@ private fun HomeSection(section: HomeSectionData) {
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             section.items.forEach { item ->
-                SongTile(item)
+                SongTile(item, tall = section.tallTiles)
             }
         }
     }
 }
 
 @Composable
-private fun SongTile(item: SongSample) {
-    Column(Modifier.width(112.dp)) {
+private fun SongTile(
+    item: SongSample,
+    tall: Boolean
+) {
+    val tileWidth = if (tall) 124.dp else 112.dp
+    Column(Modifier.width(tileWidth)) {
         CoverArt(
             colors = item.colors,
             seed = item.seed,
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(1f)
+                .aspectRatio(if (tall) 2f / 3f else 1f)
         )
         BasicText(
             item.title,
@@ -382,6 +429,7 @@ private fun ThickChevron(
 
 private data class HomeSectionData(
     val title: String,
+    val tallTiles: Boolean,
     val items: List<SongSample>
 )
 
@@ -417,6 +465,7 @@ private fun sampleHomeSections(): List<HomeSectionData> {
     return sectionNames.mapIndexed { sectionIndex, title ->
         HomeSectionData(
             title = title,
+            tallTiles = sectionIndex == 0,
             items = base.mapIndexed { itemIndex, pair ->
                 SongSample(
                     title = pair.first,
@@ -510,6 +559,7 @@ private fun RitimBottomControls(
     selectedTabIndex: Int,
     onTabSelected: (Int) -> Unit,
     onSearchSelected: () -> Unit,
+    onMiniPlayerSelected: () -> Unit,
     backdrop: Backdrop,
     modifier: Modifier = Modifier
 ) {
@@ -529,6 +579,7 @@ private fun RitimBottomControls(
             backdrop = backdrop,
             containerColor = containerColor,
             height = playerHeight,
+            onClick = onMiniPlayerSelected,
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -590,6 +641,7 @@ private fun MiniPlayerBar(
     backdrop: Backdrop,
     containerColor: Color,
     height: Dp,
+    onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var playing by rememberSaveable { mutableStateOf(false) }
@@ -612,7 +664,7 @@ private fun MiniPlayerBar(
                 interactionSource = interactionSource,
                 indication = null,
                 role = Role.Button,
-                onClick = {}
+                onClick = onClick
             ),
         surfaceColor = containerColor,
         height = height,
@@ -624,15 +676,17 @@ private fun MiniPlayerBar(
     ) {
         Box(
             Modifier
-                .size(38.dp)
+                .size(40.dp)
                 .drawBehind {
-                    val spread = 1.6.dp.toPx()
-                    drawRoundRect(
-                        color = Color.Black.copy(alpha = 0.045f),
-                        topLeft = Offset(-spread, -spread),
-                        size = Size(size.width + spread * 2f, size.height + spread * 2f),
-                        cornerRadius = CornerRadius(9.dp.toPx(), 9.dp.toPx())
-                    )
+                    listOf(4.dp, 2.5.dp, 1.2.dp).forEachIndexed { index, spreadDp ->
+                        val spread = spreadDp.toPx()
+                        drawRoundRect(
+                            color = Color.Black.copy(alpha = 0.012f - index * 0.002f),
+                            topLeft = Offset(-spread, -spread),
+                            size = Size(size.width + spread * 2f, size.height + spread * 2f),
+                            cornerRadius = CornerRadius(11.dp.toPx(), 11.dp.toPx())
+                        )
+                    }
                 }
                 .clip(RoundedCornerShape(8.dp))
                 .background(Color(0xFFD8E8FF))
@@ -726,6 +780,151 @@ private fun MiniIconButton(
         contentAlignment = Alignment.Center
     ) {
         content()
+    }
+}
+
+@Composable
+private fun PlayerCardPage(
+    onDismissStart: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val scope = rememberCoroutineScope()
+    val progress = remember { Animatable(0f) }
+    val dragOffset = remember { Animatable(0f) }
+    var lastDownwardDrag by remember { mutableFloatStateOf(0f) }
+
+    LaunchedEffect(Unit) {
+        progress.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing)
+        )
+    }
+
+    BoxWithConstraints(modifier) {
+        val screenHeight = constraints.maxHeight.toFloat()
+        val offsetY = (1f - progress.value) * screenHeight + dragOffset.value
+
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    translationY = offsetY
+                    alpha = 0.90f + 0.10f * progress.value
+                }
+                .background(Color(0xFFFDFDFD))
+        ) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .padding(horizontal = 24.dp, vertical = 28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    Modifier
+                        .size(width = 184.dp, height = 276.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(
+                            Brush.linearGradient(
+                                listOf(Color(0xFFD8E8FF), Color(0xFFFFCAD4))
+                            )
+                        )
+                ) {
+                    Canvas(Modifier.fillMaxSize()) {
+                        drawCircle(
+                            color = Color.White.copy(alpha = 0.28f),
+                            radius = size.minDimension * 0.26f,
+                            center = Offset(size.width * 0.32f, size.height * 0.28f)
+                        )
+                        drawCircle(
+                            color = Color.Black.copy(alpha = 0.07f),
+                            radius = size.minDimension * 0.38f,
+                            center = Offset(size.width * 0.80f, size.height * 0.78f)
+                        )
+                    }
+                }
+
+                BasicText(
+                    "Ritim Draft",
+                    modifier = Modifier.padding(top = 26.dp),
+                    style = TextStyle(
+                        color = Color(0xFF111315),
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+                BasicText(
+                    "Liquid preview",
+                    modifier = Modifier.padding(top = 8.dp),
+                    style = TextStyle(
+                        color = Color(0xFF737B82),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Normal
+                    )
+                )
+            }
+
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.52f)
+                    .align(Alignment.TopCenter)
+                    .pointerInput(screenHeight) {
+                        detectDragGestures(
+                            onDragStart = {
+                                lastDownwardDrag = 0f
+                            },
+                            onDragEnd = {
+                                val shouldDismiss =
+                                    dragOffset.value > screenHeight * 0.12f || lastDownwardDrag > 18f
+                                if (shouldDismiss) {
+                                    scope.launch {
+                                        onDismissStart()
+                                        progress.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = tween(
+                                                durationMillis = 170,
+                                                easing = FastOutSlowInEasing
+                                            )
+                                        )
+                                        dragOffset.snapTo(0f)
+                                        onDismiss()
+                                    }
+                                } else {
+                                    scope.launch {
+                                        dragOffset.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = tween(
+                                                durationMillis = 140,
+                                                easing = FastOutSlowInEasing
+                                            )
+                                        )
+                                    }
+                                }
+                            },
+                            onDragCancel = {
+                                scope.launch {
+                                    dragOffset.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = tween(
+                                            durationMillis = 140,
+                                            easing = FastOutSlowInEasing
+                                        )
+                                    )
+                                }
+                            },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                lastDownwardDrag = dragAmount.y
+                                scope.launch {
+                                    dragOffset.snapTo(max(0f, dragOffset.value + dragAmount.y))
+                                }
+                            }
+                        )
+                    }
+            )
+        }
     }
 }
 
