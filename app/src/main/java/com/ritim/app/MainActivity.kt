@@ -11,12 +11,14 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,8 +26,12 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -37,8 +43,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -189,12 +197,234 @@ private fun PageLayer(
     pageIndex: Int,
     modifier: Modifier = Modifier
 ) {
-    if (pageIndex == 3) {
-        Box(modifier.background(Color.White))
-    } else {
-        PageBackgroundLayer(
-            visual = pageVisual(pageIndex),
-            modifier = modifier
+    when (pageIndex) {
+        0 -> HomePage(modifier)
+        3 -> Box(modifier.background(Color.White))
+        else -> {
+            PageBackgroundLayer(
+                visual = pageVisual(pageIndex),
+                modifier = modifier
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomePage(
+    modifier: Modifier = Modifier
+) {
+    val sections = remember { sampleHomeSections() }
+    val scrollState = rememberScrollState()
+
+    Column(
+        modifier
+            .background(Color.White)
+            .fillMaxSize()
+            .verticalScroll(scrollState)
+            .statusBarsPadding()
+            .padding(top = 22.dp, bottom = 166.dp)
+    ) {
+        BasicText(
+            "主页",
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp),
+            style = TextStyle(
+                color = Color(0xFF111315),
+                fontSize = 28.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+
+        Column(
+            Modifier.padding(top = 26.dp),
+            verticalArrangement = Arrangement.spacedBy(30.dp)
+        ) {
+            sections.forEach { section ->
+                HomeSection(section)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeSection(section: HomeSectionData) {
+    Column {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BasicText(
+                section.title,
+                style = TextStyle(
+                    color = Color(0xFF151719),
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            )
+            ThickChevron(
+                modifier = Modifier
+                    .padding(start = 9.dp)
+                    .size(15.dp),
+                color = Color(0xFF151719)
+            )
+        }
+
+        Row(
+            Modifier
+                .padding(top = 14.dp)
+                .horizontalScroll(rememberScrollState())
+                .padding(start = 16.dp, end = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            section.items.forEach { item ->
+                SongTile(item)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SongTile(item: SongSample) {
+    Column(Modifier.width(112.dp)) {
+        CoverArt(
+            colors = item.colors,
+            seed = item.seed,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+        )
+        BasicText(
+            item.title,
+            modifier = Modifier.padding(top = 8.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = TextStyle(
+                color = Color(0xFF171A1D),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+        )
+        BasicText(
+            item.artist,
+            modifier = Modifier.padding(top = 3.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = TextStyle(
+                color = Color(0xFF737B82),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Normal
+            )
+        )
+    }
+}
+
+@Composable
+private fun CoverArt(
+    colors: List<Color>,
+    seed: Int,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Brush.linearGradient(colors))
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val stroke = Stroke(width = 1.5.dp.toPx(), cap = StrokeCap.Round)
+            drawCircle(
+                color = Color.White.copy(alpha = 0.25f),
+                radius = size.minDimension * (0.22f + (seed % 3) * 0.04f),
+                center = Offset(size.width * 0.28f, size.height * 0.28f)
+            )
+            drawCircle(
+                color = Color.Black.copy(alpha = 0.08f),
+                radius = size.minDimension * 0.36f,
+                center = Offset(size.width * 0.78f, size.height * 0.76f)
+            )
+            repeat(4) { index ->
+                val y = size.height * (0.32f + index * 0.12f)
+                drawLine(
+                    color = Color.White.copy(alpha = 0.22f),
+                    start = Offset(size.width * 0.18f, y),
+                    end = Offset(size.width * 0.84f, y + ((seed + index) % 3 - 1) * 8.dp.toPx()),
+                    strokeWidth = stroke.width,
+                    cap = StrokeCap.Round
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThickChevron(
+    modifier: Modifier = Modifier,
+    color: Color = Color(0xFF111315)
+) {
+    Canvas(modifier) {
+        val strokeWidth = 3.1.dp.toPx()
+        drawLine(
+            color = color,
+            start = Offset(size.width * 0.34f, size.height * 0.22f),
+            end = Offset(size.width * 0.68f, size.height * 0.50f),
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = color,
+            start = Offset(size.width * 0.68f, size.height * 0.50f),
+            end = Offset(size.width * 0.34f, size.height * 0.78f),
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Round
+        )
+    }
+}
+
+private data class HomeSectionData(
+    val title: String,
+    val items: List<SongSample>
+)
+
+private data class SongSample(
+    val title: String,
+    val artist: String,
+    val colors: List<Color>,
+    val seed: Int
+)
+
+private fun sampleHomeSections(): List<HomeSectionData> {
+    val palettes = listOf(
+        listOf(Color(0xFF7EC8E3), Color(0xFFE8F5E9)),
+        listOf(Color(0xFFFFB4A2), Color(0xFFFFD6A5)),
+        listOf(Color(0xFFB8C0FF), Color(0xFFEFD3D7)),
+        listOf(Color(0xFF95D5B2), Color(0xFFD8F3DC)),
+        listOf(Color(0xFFFFCAD4), Color(0xFFF4ACB7)),
+        listOf(Color(0xFFA9DEF9), Color(0xFFE4C1F9)),
+        listOf(Color(0xFFE9EDC9), Color(0xFFD4A373)),
+        listOf(Color(0xFFCDB4DB), Color(0xFFFFC8DD))
+    )
+    val base = listOf(
+        "Soft Loop" to "Mira Vale",
+        "Blue Static" to "Nolan East",
+        "Paper Moon" to "Yun Seo",
+        "Small Hours" to "Lena Park",
+        "Glass Road" to "Theo Lane",
+        "Warm Signal" to "Aria Sun",
+        "Low Tide" to "Miles Wren",
+        "Neon Rain" to "Echo Field"
+    )
+    val sectionNames = listOf("最近播放", "最近热门", "最近添加", "为你推荐", "继续收听")
+    return sectionNames.mapIndexed { sectionIndex, title ->
+        HomeSectionData(
+            title = title,
+            items = base.mapIndexed { itemIndex, pair ->
+                SongSample(
+                    title = pair.first,
+                    artist = pair.second,
+                    colors = palettes[(itemIndex + sectionIndex) % palettes.size],
+                    seed = itemIndex + sectionIndex * 3
+                )
+            }
         )
     }
 }
@@ -363,10 +593,27 @@ private fun MiniPlayerBar(
     modifier: Modifier = Modifier
 ) {
     var playing by rememberSaveable { mutableStateOf(false) }
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.985f else 1f,
+        animationSpec = tween(durationMillis = 120)
+    )
 
     LiquidStaticBar(
         backdrop = backdrop,
-        modifier = modifier,
+        modifier = modifier
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .semantics { contentDescription = "迷你播放器" }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                role = Role.Button,
+                onClick = {}
+            ),
         surfaceColor = containerColor,
         height = height,
         startPadding = 32.dp,
@@ -378,7 +625,15 @@ private fun MiniPlayerBar(
         Box(
             Modifier
                 .size(38.dp)
-                .shadow(4.dp, RoundedCornerShape(8.dp), clip = false)
+                .drawBehind {
+                    val spread = 1.6.dp.toPx()
+                    drawRoundRect(
+                        color = Color.Black.copy(alpha = 0.045f),
+                        topLeft = Offset(-spread, -spread),
+                        size = Size(size.width + spread * 2f, size.height + spread * 2f),
+                        cornerRadius = CornerRadius(9.dp.toPx(), 9.dp.toPx())
+                    )
+                }
                 .clip(RoundedCornerShape(8.dp))
                 .background(Color(0xFFD8E8FF))
         )
@@ -423,7 +678,7 @@ private fun MiniPlayerBar(
             ) {
                 PlayPauseGlyph(
                     playing = playing,
-                    modifier = Modifier.size(23.dp),
+                    modifier = Modifier.size(26.dp),
                     color = Color(0xFF1E1E1E)
                 )
             }
@@ -433,7 +688,7 @@ private fun MiniPlayerBar(
                 onClick = {}
             ) {
                 NextGlyph(
-                    modifier = Modifier.size(24.dp),
+                    modifier = Modifier.size(27.dp),
                     color = Color(0xFF1E1E1E)
                 )
             }
@@ -456,7 +711,7 @@ private fun MiniIconButton(
 
     Box(
         Modifier
-            .size(37.dp)
+            .size(40.dp)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
