@@ -1802,6 +1802,7 @@ private fun PlayerCardPage(
         val sideControlIconSize = if (compactPlayerLayout) 42.dp else 48.dp
         val mainControlIconSize = if (compactPlayerLayout) 56.dp else 64.dp
         val controlSpacer = if (compactPlayerLayout) 14.dp else 18.dp
+        val coverLift = if (compactPlayerLayout) 6.dp else 10.dp
         SideEffect {
             onBackdropProgressChange(backdropProgress)
         }
@@ -1850,7 +1851,7 @@ private fun PlayerCardPage(
                         .background(Color.White.copy(alpha = 0.42f))
                 )
 
-                Spacer(Modifier.height(if (compactPlayerLayout) 28.dp else 42.dp))
+                Spacer(Modifier.height(if (compactPlayerLayout) 28.dp - coverLift else 42.dp - coverLift))
 
                 SolidCoverArt(
                     song = song,
@@ -1858,6 +1859,8 @@ private fun PlayerCardPage(
                         .size(coverSize)
                         .clip(RoundedCornerShape(16.dp))
                 )
+
+                Spacer(Modifier.height(coverLift))
 
                 Column(
                     modifier = Modifier
@@ -1868,7 +1871,9 @@ private fun PlayerCardPage(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Column(
-                        modifier = Modifier.width(coverSize),
+                        modifier = Modifier
+                            .width(coverSize)
+                            .offset(y = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         PlayerSongInfoRow(
@@ -1888,7 +1893,9 @@ private fun PlayerCardPage(
                     }
 
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .offset(y = 4.dp),
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -2425,17 +2432,21 @@ private fun StarGlyph(
     color: Color = Color.White
 ) {
     Canvas(modifier) {
+        val strokeWidth = 1.2.dp.toPx()
+        val inset = if (filled) 0f else strokeWidth * 0.5f
+        fun x(fraction: Float) = inset + (size.width - inset * 2f) * fraction
+        fun y(fraction: Float) = inset + (size.height - inset * 2f) * fraction
         val path = Path().apply {
-            moveTo(size.width * 0.50f, size.height * 0.12f)
-            lineTo(size.width * 0.61f, size.height * 0.38f)
-            lineTo(size.width * 0.89f, size.height * 0.40f)
-            lineTo(size.width * 0.68f, size.height * 0.58f)
-            lineTo(size.width * 0.75f, size.height * 0.86f)
-            lineTo(size.width * 0.50f, size.height * 0.71f)
-            lineTo(size.width * 0.25f, size.height * 0.86f)
-            lineTo(size.width * 0.32f, size.height * 0.58f)
-            lineTo(size.width * 0.11f, size.height * 0.40f)
-            lineTo(size.width * 0.39f, size.height * 0.38f)
+            moveTo(x(0.50f), y(0.12f))
+            lineTo(x(0.61f), y(0.38f))
+            lineTo(x(0.89f), y(0.40f))
+            lineTo(x(0.68f), y(0.58f))
+            lineTo(x(0.75f), y(0.86f))
+            lineTo(x(0.50f), y(0.71f))
+            lineTo(x(0.25f), y(0.86f))
+            lineTo(x(0.32f), y(0.58f))
+            lineTo(x(0.11f), y(0.40f))
+            lineTo(x(0.39f), y(0.38f))
             close()
         }
         if (filled) {
@@ -2444,7 +2455,7 @@ private fun StarGlyph(
             drawPath(
                 path = path,
                 color = color,
-                style = Stroke(width = 1.25.dp.toPx(), cap = StrokeCap.Round)
+                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
             )
         }
     }
@@ -2514,33 +2525,26 @@ private fun PlayPauseGlyph(
     modifier: Modifier = Modifier,
     color: Color = Color(0xFF111315)
 ) {
-    val pauseProgress by animateFloatAsState(
-        targetValue = if (playing) 1f else 0f,
-        animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing)
-    )
     Canvas(modifier) {
-        val playAlpha = 1f - pauseProgress
-        if (playAlpha > 0.01f) {
+        if (playing) {
+            drawRect(
+                color = color,
+                topLeft = Offset(size.width * 0.33f, size.height * 0.24f),
+                size = Size(size.width * 0.12f, size.height * 0.52f)
+            )
+            drawRect(
+                color = color,
+                topLeft = Offset(size.width * 0.55f, size.height * 0.24f),
+                size = Size(size.width * 0.12f, size.height * 0.52f)
+            )
+        } else {
             val path = Path().apply {
                 moveTo(size.width * 0.34f, size.height * 0.22f)
                 lineTo(size.width * 0.34f, size.height * 0.78f)
                 lineTo(size.width * 0.78f, size.height * 0.50f)
                 close()
             }
-            drawPath(path, color.copy(alpha = color.alpha * playAlpha))
-        }
-
-        if (pauseProgress > 0.01f) {
-            drawRect(
-                color = color.copy(alpha = color.alpha * pauseProgress),
-                topLeft = Offset(size.width * 0.33f, size.height * 0.24f),
-                size = Size(size.width * 0.12f, size.height * 0.52f)
-            )
-            drawRect(
-                color = color.copy(alpha = color.alpha * pauseProgress),
-                topLeft = Offset(size.width * 0.55f, size.height * 0.24f),
-                size = Size(size.width * 0.12f, size.height * 0.52f)
-            )
+            drawPath(path, color)
         }
     }
 }
