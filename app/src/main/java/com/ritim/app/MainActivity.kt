@@ -13,6 +13,7 @@ import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -106,6 +107,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.nio.charset.Charset
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -875,7 +877,15 @@ private data class SongSample(
     val durationMs: Long = 0L,
     val dateAddedSeconds: Long = 0L,
     val contentUri: Uri? = null,
-    val audioQualityLabel: String = ""
+    val audioQualityLabel: String = "",
+    val displayName: String = "",
+    val relativePath: String = "",
+    val filePath: String = ""
+)
+
+private data class LrcLine(
+    val timeMs: Long,
+    val text: String
 )
 
 private data class MusicLibraryIndex(
@@ -1030,6 +1040,9 @@ private suspend fun saveCachedMusicIndex(context: Context, songs: List<SongSampl
                         .put("dateAddedSeconds", song.dateAddedSeconds)
                         .put("contentUri", song.contentUri?.toString())
                         .put("audioQualityLabel", song.audioQualityLabel)
+                        .put("displayName", song.displayName)
+                        .put("relativePath", song.relativePath)
+                        .put("filePath", song.filePath)
                 )
             }
             musicIndexFile(context).writeText(array.toString())
@@ -1057,7 +1070,10 @@ private fun loadCachedMusicIndex(context: Context): List<SongSample> =
                         durationMs = item.optLong("durationMs"),
                         dateAddedSeconds = item.optLong("dateAddedSeconds"),
                         contentUri = uriText?.let(Uri::parse),
-                        audioQualityLabel = item.optString("audioQualityLabel")
+                        audioQualityLabel = item.optString("audioQualityLabel"),
+                        displayName = item.optString("displayName"),
+                        relativePath = item.optString("relativePath"),
+                        filePath = item.optString("filePath")
                     )
                 )
             }
@@ -1094,6 +1110,100 @@ private fun loadMusicLibraryIndex(context: Context): MusicLibraryIndex =
 
 private fun musicLibraryIndexFile(context: Context): File =
     File(context.filesDir, "music_library_index.json")
+
+@Composable
+private fun rememberSongLyrics(song: SongSample): List<LrcLine> {
+    val context = LocalContext.current
+    var lyrics by remember(song.id, song.displayName, song.relativePath, song.filePath) {
+        mutableStateOf(emptyList<LrcLine>())
+    }
+
+    LaunchedEffect(context, song.id, song.displayName, song.relativePath, song.filePath) {
+        lyrics = loadSongLyrics(context, song)
+    }
+
+    return lyrics
+}
+
+private suspend fun loadSongLyrics(context: Context, song: SongSample): List<LrcLine> =
+    withContext(Dispatchers.IO) {
+        val lyricsFile = findLyricsFile(context, song) ?: return@withContext emptyList()
+        parseLrcText(readLyricsText(lyricsFile))
+    }
+
+private fun findLyricsFile(context: Context, song: SongSample): File? {
+    val audioName = song.displayName.ifBlank {
+        song.filePath.substringAfterLast('/').ifBlank { "${song.title}.mp3" }
+    }
+    val audioNameLower = audioName.lowercase()
+    val audioBaseLower = audioNameLower.substringBeforeLast('.', audioNameLower)
+    val acceptedNames = setOf(
+        "$audioBaseLower.lrc",
+        "$audioNameLower.lrc"
+    )
+    return lyricsDirectory(context, song)
+        ?.listFiles()
+        ?.firstOrNull { file ->
+            file.isFile && file.name.lowercase() in acceptedNames
+        }
+}
+
+private fun lyricsDirectory(context: Context, song: SongSample): File? {
+    if (song.filePath.isNotBlank()) {
+        return File(song.filePath).parentFile
+    }
+    val publicMusicDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
+    val relativePath = song.relativePath
+        .removePrefix("Music/")
+        .trim('/')
+    return if (relativePath.isBlank()) {
+        publicMusicDir
+    } else {
+        File(publicMusicDir, relativePath)
+    }.takeIf { it.exists() && it.isDirectory }
+}
+
+private fun readLyricsText(file: File): String {
+    val bytes = runCatching { file.readBytes() }.getOrDefault(ByteArray(0))
+    if (bytes.isEmpty()) return ""
+    return runCatching { bytes.toString(Charsets.UTF_8) }
+        .getOrElse {
+            runCatching { bytes.toString(Charset.forName("GBK")) }.getOrDefault("")
+        }
+}
+
+private fun parseLrcText(text: String): List<LrcLine> {
+    val timestampPattern = Regex("""\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?]""")
+    return text.lineSequence()
+        .flatMap { rawLine ->
+            val matches = timestampPattern.findAll(rawLine).toList()
+            if (matches.isEmpty()) {
+                emptySequence<LrcLine>()
+            } else {
+                val lyricText = timestampPattern.replace(rawLine, "").trim()
+                if (lyricText.isBlank()) {
+                    emptySequence<LrcLine>()
+                } else {
+                    matches.asSequence().mapNotNull { match ->
+                        val minute = match.groupValues.getOrNull(1)?.toLongOrNull() ?: return@mapNotNull null
+                        val second = match.groupValues.getOrNull(2)?.toLongOrNull() ?: return@mapNotNull null
+                        val fractionText = match.groupValues.getOrNull(3).orEmpty()
+                        val fractionMs = when (fractionText.length) {
+                            1 -> fractionText.toLongOrNull()?.times(100L)
+                            2 -> fractionText.toLongOrNull()?.times(10L)
+                            else -> fractionText.take(3).padEnd(3, '0').toLongOrNull()
+                        } ?: 0L
+                        LrcLine(
+                            timeMs = minute * 60_000L + second * 1_000L + fractionMs,
+                            text = lyricText
+                        )
+                    }
+                }
+            }
+        }
+        .sortedBy { it.timeMs }
+        .toList()
+}
 
 @Composable
 private fun rememberMusicFolderSongs(): List<SongSample> {
@@ -1215,11 +1325,13 @@ private suspend fun loadMusicFolderSongs(context: Context): List<SongSample> =
                 val albumIdIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM_ID)
                 val durationIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
                 val dateAddedIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
+                val pathIndex = cursor.getColumnIndexOrThrow(pathColumn)
 
                 buildList {
                     while (cursor.moveToNext()) {
                         val id = cursor.getLong(idIndex)
                         val displayName = cursorString(cursor, displayNameIndex)
+                        val pathText = cursorString(cursor, pathIndex).orEmpty()
                         val contentUri = ContentUris.withAppendedId(
                             MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
                             id
@@ -1247,7 +1359,18 @@ private suspend fun loadMusicFolderSongs(context: Context): List<SongSample> =
                                     displayName = displayName,
                                     mediaStoreMimeType = cursorString(cursor, mimeTypeIndex),
                                     mediaStoreBitrate = 0L
-                                )
+                                ),
+                                displayName = displayName.orEmpty(),
+                                relativePath = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                    pathText
+                                } else {
+                                    ""
+                                },
+                                filePath = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                                    pathText
+                                } else {
+                                    ""
+                                }
                             )
                         )
                     }
@@ -1776,6 +1899,15 @@ private fun PlayerCardPage(
     val progress = remember { Animatable(0f) }
     val dragOffset = remember { Animatable(0f) }
     var lastDownwardDrag by remember { mutableFloatStateOf(0f) }
+    var lyricsVisible by rememberSaveable(song.id) { mutableStateOf(false) }
+    val lyrics = rememberSongLyrics(song)
+    val lyricsProgress by animateFloatAsState(
+        targetValue = if (lyricsVisible) 1f else 0f,
+        animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing)
+    )
+    val currentPositionMs = (song.durationMs * playbackProgress.coerceIn(0f, 1f)).toLong()
+    val activeLyricIndex = lyrics.indexOfLast { it.timeMs <= currentPositionMs }
+        .coerceAtLeast(0)
 
     LaunchedEffect(Unit) {
         progress.animateTo(
@@ -1785,6 +1917,7 @@ private fun PlayerCardPage(
     }
 
     BoxWithConstraints(modifier) {
+        val density = LocalDensity.current
         val screenHeight = constraints.maxHeight.toFloat()
         val offsetY = (1f - progress.value) * screenHeight + dragOffset.value
         val backdropProgress = if (screenHeight > 0f) {
@@ -1803,6 +1936,10 @@ private fun PlayerCardPage(
         val mainControlIconSize = if (compactPlayerLayout) 56.dp else 64.dp
         val controlSpacer = if (compactPlayerLayout) 14.dp else 18.dp
         val coverLift = if (compactPlayerLayout) 6.dp else 10.dp
+        val lyricsCoverScale = if (compactPlayerLayout) 0.21f else 0.19f
+        val coverTranslationXPx = with(density) {
+            -((maxWidth - coverSize) / 2f).toPx() * lyricsProgress
+        }
         SideEffect {
             onBackdropProgressChange(backdropProgress)
         }
@@ -1853,12 +1990,48 @@ private fun PlayerCardPage(
 
                 Spacer(Modifier.height(if (compactPlayerLayout) 28.dp - coverLift else 42.dp - coverLift))
 
-                SolidCoverArt(
-                    song = song,
-                    modifier = Modifier
-                        .size(coverSize)
-                        .clip(RoundedCornerShape(16.dp))
-                )
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(coverSize)
+                ) {
+                    SolidCoverArt(
+                        song = song,
+                        modifier = Modifier
+                            .size(coverSize)
+                            .align(Alignment.TopCenter)
+                            .graphicsLayer {
+                                val scale = 1f - (1f - lyricsCoverScale) * lyricsProgress
+                                scaleX = scale
+                                scaleY = scale
+                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
+                                translationX = coverTranslationXPx
+                            }
+                            .clip(RoundedCornerShape(16.dp))
+                    )
+
+                    LyricsHeaderRow(
+                        song = song,
+                        favorite = favorite,
+                        onFavoriteToggle = onFavoriteToggle,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(start = coverSize * lyricsCoverScale + 12.dp)
+                            .fillMaxWidth()
+                            .height(coverSize * lyricsCoverScale)
+                            .graphicsLayer { alpha = lyricsProgress }
+                    )
+
+                    LyricsPanel(
+                        lyrics = lyrics,
+                        activeIndex = activeLyricIndex,
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .fillMaxWidth()
+                            .height(coverSize - coverSize * lyricsCoverScale - 18.dp)
+                            .graphicsLayer { alpha = lyricsProgress }
+                    )
+                }
 
                 Spacer(Modifier.height(coverLift))
 
@@ -1880,7 +2053,9 @@ private fun PlayerCardPage(
                             song = song,
                             favorite = favorite,
                             onFavoriteToggle = onFavoriteToggle,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .graphicsLayer { alpha = 1f - lyricsProgress }
                         )
 
                         PlayerTimeline(
@@ -1948,10 +2123,11 @@ private fun PlayerCardPage(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        PlayerIconButton(
+                        PlayerToggleIconButton(
                             contentDescription = "歌词",
+                            selected = lyricsVisible,
                             size = 48.dp,
-                            onClick = {},
+                            onClick = { lyricsVisible = !lyricsVisible },
                             pressScale = 0.97f
                         ) {
                             LyricsGlyph(
@@ -2178,6 +2354,124 @@ private fun PlayerSongInfoRow(
                 MoreGlyph(
                     modifier = Modifier.size(22.dp),
                     color = Color.White
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LyricsHeaderRow(
+    song: SongSample,
+    favorite: Boolean,
+    onFavoriteToggle: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier,
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            Modifier.weight(1f),
+            verticalArrangement = Arrangement.Center
+        ) {
+            BasicText(
+                song.title,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = TextStyle(
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            )
+            Spacer(Modifier.height(2.dp))
+            BasicText(
+                song.artist,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = TextStyle(
+                    color = Color.White.copy(alpha = 0.62f),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Normal
+                )
+            )
+        }
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            PlayerIconButton(
+                contentDescription = if (favorite) "取消收藏" else "收藏",
+                size = 36.dp,
+                onClick = onFavoriteToggle,
+                pressScale = 0.96f
+            ) {
+                StarGlyph(
+                    filled = favorite,
+                    modifier = Modifier.size(20.dp),
+                    color = Color.White
+                )
+            }
+            PlayerIconButton(
+                contentDescription = "更多",
+                size = 34.dp,
+                onClick = {},
+                pressScale = 0.96f
+            ) {
+                MoreGlyph(
+                    modifier = Modifier.size(20.dp),
+                    color = Color.White
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LyricsPanel(
+    lyrics: List<LrcLine>,
+    activeIndex: Int,
+    modifier: Modifier = Modifier
+) {
+    val scrollState = rememberScrollState()
+
+    LaunchedEffect(lyrics.size, activeIndex) {
+        if (lyrics.isNotEmpty()) {
+            scrollState.animateScrollTo(
+                (activeIndex * 34).coerceIn(0, scrollState.maxValue)
+            )
+        }
+    }
+
+    Column(
+        modifier
+            .verticalScroll(scrollState)
+            .padding(top = 12.dp, bottom = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        if (lyrics.isEmpty()) {
+            BasicText(
+                "暂无歌词",
+                style = TextStyle(
+                    color = Color.White.copy(alpha = 0.42f),
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            )
+        } else {
+            lyrics.forEachIndexed { index, line ->
+                val active = index == activeIndex
+                BasicText(
+                    line.text,
+                    style = TextStyle(
+                        color = Color.White.copy(alpha = if (active) 0.92f else 0.44f),
+                        fontSize = if (active) 18.sp else 16.sp,
+                        lineHeight = 27.sp,
+                        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium
+                    )
                 )
             }
         }
@@ -2421,6 +2715,54 @@ private fun PlayerIconButton(
             ),
         contentAlignment = Alignment.Center
     ) {
+        content()
+    }
+}
+
+@Composable
+private fun PlayerToggleIconButton(
+    contentDescription: String,
+    selected: Boolean,
+    size: Dp,
+    onClick: () -> Unit,
+    pressScale: Float = 0.97f,
+    content: @Composable () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) pressScale else 1f,
+        animationSpec = tween(durationMillis = 110)
+    )
+
+    Box(
+        Modifier
+            .size(size)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .semantics { this.contentDescription = contentDescription }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                role = Role.Button,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            Modifier
+                .size(width = 38.dp, height = 32.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(
+                    if (selected) {
+                        Color.White.copy(alpha = 0.16f)
+                    } else {
+                        Color.Transparent
+                    }
+                )
+        )
         content()
     }
 }
