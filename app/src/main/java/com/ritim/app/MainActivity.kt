@@ -104,6 +104,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
@@ -1797,105 +1798,108 @@ private fun MiniPlayerBar(
         animationSpec = tween(durationMillis = 120)
     )
 
-    LiquidStaticBar(
-        backdrop = backdrop,
-        modifier = modifier
+    Box(
+        modifier
+            .height(height)
+            .fillMaxWidth()
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
             .semantics { contentDescription = "迷你播放器" }
-            .clickable(
-                interactionSource = interactionSource,
-                indication = null,
-                role = Role.Button,
-                onClick = onClick
-            ),
-        surfaceColor = containerColor,
-        height = height,
-        startPadding = 32.dp,
-        endPadding = 12.dp,
-        blurRadius = 8.dp,
-        refractionHeight = 18.dp,
-        refractionAmount = 22.dp
     ) {
-        MiniCoverArt(
-            song = song,
-            modifier = Modifier
-                .size(42.dp)
-                .shadow(
-                    elevation = 1.dp,
-                    shape = RoundedCornerShape(9.dp),
-                    clip = false
-                )
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = null,
-                    role = Role.Button,
-                    onClick = onClick
-                )
-        )
-
-        Column(
-            Modifier
-                .height(36.dp)
-                .weight(1f)
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = null,
-                    role = Role.Button,
-                    onClick = onClick
-                ),
-            verticalArrangement = Arrangement.SpaceBetween
+        LiquidStaticBar(
+            backdrop = backdrop,
+            modifier = Modifier.fillMaxSize(),
+            surfaceColor = containerColor,
+            height = height,
+            startPadding = 32.dp,
+            endPadding = 12.dp,
+            blurRadius = 8.dp,
+            refractionHeight = 18.dp,
+            refractionAmount = 22.dp
         ) {
-            BasicText(
-                song.title,
-                modifier = Modifier.offset(y = 1.dp),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = TextStyle(
-                    color = Color(0xFF171A1D),
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium
-                )
+            MiniCoverArt(
+                song = song,
+                modifier = Modifier
+                    .size(42.dp)
+                    .shadow(
+                        elevation = 1.dp,
+                        shape = RoundedCornerShape(9.dp),
+                        clip = false
+                    )
             )
-            BasicText(
-                song.artist,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = TextStyle(
-                    color = Color(0xFF687076),
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Normal
+
+            Column(
+                Modifier
+                    .height(36.dp)
+                    .weight(1f),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                BasicText(
+                    song.title,
+                    modifier = Modifier.offset(y = 1.dp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(
+                        color = Color(0xFF171A1D),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium
+                    )
                 )
-            )
+                BasicText(
+                    song.artist,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(
+                        color = Color(0xFF687076),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Normal
+                    )
+                )
+            }
+
+            Row(
+                Modifier.offset(x = (-5).dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                MiniIconButton(
+                    contentDescription = if (playing) "暂停" else "播放",
+                    onClick = { onPlayingChange(!playing) }
+                ) {
+                    PlayPauseGlyph(
+                        playing = playing,
+                        modifier = Modifier.size(26.dp),
+                        color = Color(0xFF1E1E1E)
+                    )
+                }
+
+                MiniIconButton(
+                    contentDescription = "下一曲",
+                    onClick = onNext
+                ) {
+                    NextGlyph(
+                        modifier = Modifier.size(27.dp),
+                        color = Color(0xFF1E1E1E)
+                    )
+                }
+            }
         }
 
-        Row(
-            Modifier.offset(x = (-5).dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            MiniIconButton(
-                contentDescription = if (playing) "暂停" else "播放",
-                onClick = { onPlayingChange(!playing) }
-            ) {
-                PlayPauseGlyph(
-                    playing = playing,
-                    modifier = Modifier.size(26.dp),
-                    color = Color(0xFF1E1E1E)
-                )
-            }
-
-            MiniIconButton(
-                contentDescription = "下一曲",
-                onClick = onNext
-            ) {
-                NextGlyph(
-                    modifier = Modifier.size(27.dp),
-                    color = Color(0xFF1E1E1E)
-                )
-            }
+        Row(Modifier.fillMaxSize()) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .clickable(
+                        interactionSource = interactionSource,
+                        indication = null,
+                        role = Role.Button,
+                        onClick = onClick
+                    )
+            )
+            Spacer(Modifier.width(104.dp))
         }
     }
 }
@@ -2024,6 +2028,53 @@ private fun PlayerCardPage(
         val coverTranslationXPx = with(density) {
             12.dp.toPx() * lyricsProgress
         }
+        fun startDismissDrag() {
+            lastDownwardDrag = 0f
+        }
+        fun applyDismissDrag(dragDeltaY: Float) {
+            lastDownwardDrag = dragDeltaY
+            scope.launch {
+                dragOffset.snapTo(max(0f, dragOffset.value + dragDeltaY))
+            }
+        }
+        fun settleDismissDrag() {
+            val shouldDismiss =
+                dragOffset.value > screenHeight * 0.12f || lastDownwardDrag > 18f
+            if (shouldDismiss) {
+                scope.launch {
+                    progress.animateTo(
+                        targetValue = 0f,
+                        animationSpec = tween(
+                            durationMillis = 170,
+                            easing = FastOutSlowInEasing
+                        )
+                    )
+                    dragOffset.snapTo(0f)
+                    onDismiss()
+                }
+            } else {
+                scope.launch {
+                    dragOffset.animateTo(
+                        targetValue = 0f,
+                        animationSpec = tween(
+                            durationMillis = 140,
+                            easing = FastOutSlowInEasing
+                        )
+                    )
+                }
+            }
+        }
+        fun cancelDismissDrag() {
+            scope.launch {
+                dragOffset.animateTo(
+                    targetValue = 0f,
+                    animationSpec = tween(
+                        durationMillis = 140,
+                        easing = FastOutSlowInEasing
+                    )
+                )
+            }
+        }
         fun Modifier.playerDismissDrag(enabled: Boolean = true): Modifier =
             if (!enabled) {
                 this
@@ -2031,52 +2082,17 @@ private fun PlayerCardPage(
                 pointerInput(screenHeight) {
                     detectDragGestures(
                         onDragStart = {
-                            lastDownwardDrag = 0f
+                            startDismissDrag()
                         },
                         onDragEnd = {
-                            val shouldDismiss =
-                                dragOffset.value > screenHeight * 0.12f || lastDownwardDrag > 18f
-                            if (shouldDismiss) {
-                                scope.launch {
-                                    progress.animateTo(
-                                        targetValue = 0f,
-                                        animationSpec = tween(
-                                            durationMillis = 170,
-                                            easing = FastOutSlowInEasing
-                                        )
-                                    )
-                                    dragOffset.snapTo(0f)
-                                    onDismiss()
-                                }
-                            } else {
-                                scope.launch {
-                                    dragOffset.animateTo(
-                                        targetValue = 0f,
-                                        animationSpec = tween(
-                                            durationMillis = 140,
-                                            easing = FastOutSlowInEasing
-                                        )
-                                    )
-                                }
-                            }
+                            settleDismissDrag()
                         },
                         onDragCancel = {
-                            scope.launch {
-                                dragOffset.animateTo(
-                                    targetValue = 0f,
-                                    animationSpec = tween(
-                                        durationMillis = 140,
-                                        easing = FastOutSlowInEasing
-                                    )
-                                )
-                            }
+                            cancelDismissDrag()
                         },
                         onDrag = { change, dragAmount ->
                             change.consume()
-                            lastDownwardDrag = dragAmount.y
-                            scope.launch {
-                                dragOffset.snapTo(max(0f, dragOffset.value + dragAmount.y))
-                            }
+                            applyDismissDrag(dragAmount.y)
                         }
                     )
                 }
@@ -2115,9 +2131,7 @@ private fun PlayerCardPage(
 
             Box(
                 Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.62f)
-                    .align(Alignment.TopCenter)
+                    .fillMaxSize()
                     .playerDismissDrag()
             )
 
@@ -2161,36 +2175,41 @@ private fun PlayerCardPage(
                             .clip(RoundedCornerShape(16.dp))
                     )
 
-                    LyricsHeaderRow(
-                        song = song,
-                        favorite = favorite,
-                        onFavoriteToggle = onFavoriteToggle,
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(
-                                start = lyricsEdgeInset + lyricsCoverSize + 12.dp,
-                                end = lyricsEdgeInset
-                            )
-                            .fillMaxWidth()
-                            .height(lyricsCoverSize)
-                            .graphicsLayer { alpha = lyricsProgress }
-                    )
+                    if (lyricsProgress > 0.01f) {
+                        LyricsHeaderRow(
+                            song = song,
+                            favorite = favorite,
+                            onFavoriteToggle = onFavoriteToggle,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(
+                                    start = lyricsEdgeInset + lyricsCoverSize + 12.dp,
+                                    end = lyricsEdgeInset
+                                )
+                                .fillMaxWidth()
+                                .height(lyricsCoverSize)
+                                .graphicsLayer { alpha = lyricsProgress }
+                        )
 
-                    LyricsPanel(
-                        lyrics = lyrics,
-                        activeIndex = activeLyricIndex,
-                        currentPositionMs = currentPositionMs,
-                        songDurationMs = song.durationMs,
-                        playing = playing,
-                        edgePadding = lyricsPanelEdgeInset,
-                        onLyricSeek = onSeek,
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .fillMaxWidth()
-                            .height(coverSize - lyricsCoverSize - lyricsSpacing + lyricsPanelBottomExtension)
-                            .offset(y = 10.dp)
-                            .graphicsLayer { alpha = lyricsProgress }
-                    )
+                        LyricsPanel(
+                            lyrics = lyrics,
+                            activeIndex = activeLyricIndex,
+                            currentPositionMs = currentPositionMs,
+                            songDurationMs = song.durationMs,
+                            playing = playing,
+                            edgePadding = lyricsPanelEdgeInset,
+                            onLyricSeek = onSeek,
+                            onDismissDragStart = { startDismissDrag() },
+                            onDismissDragDelta = { applyDismissDrag(it) },
+                            onDismissDragEnd = { settleDismissDrag() },
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .fillMaxWidth()
+                                .height(coverSize - lyricsCoverSize - lyricsSpacing + lyricsPanelBottomExtension)
+                                .offset(y = 10.dp)
+                                .graphicsLayer { alpha = lyricsProgress }
+                        )
+                    }
 
                     if (lyricsVisible) {
                         Box(
@@ -2677,6 +2696,9 @@ private fun LyricsPanel(
     playing: Boolean,
     edgePadding: Dp,
     onLyricSeek: (Float) -> Unit,
+    onDismissDragStart: () -> Unit = {},
+    onDismissDragDelta: (Float) -> Unit = {},
+    onDismissDragEnd: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     BoxWithConstraints(modifier.clipToBounds()) {
@@ -2690,20 +2712,49 @@ private fun LyricsPanel(
         val activeLineShiftPx = with(density) { -3.dp.toPx() }
         var userScrollSuspended by remember { mutableStateOf(false) }
         var userScrollRequest by remember { mutableIntStateOf(0) }
+        var dismissDragActive by remember { mutableStateOf(false) }
         val lineHeights = remember(lyrics) {
             mutableStateListOf<Int>().apply {
                 repeat(lyrics.size) { add(0) }
             }
         }
         val lineHeightsTotal = lineHeights.sum()
-        val manualScrollConnection = remember {
+        val manualScrollConnection = remember(
+            onDismissDragStart,
+            onDismissDragDelta,
+            onDismissDragEnd
+        ) {
             object : NestedScrollConnection {
                 override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                     if (source == NestedScrollSource.UserInput && available.y != 0f) {
                         userScrollSuspended = true
                         userScrollRequest += 1
+                        if (available.y > 0f || dismissDragActive) {
+                            if (!dismissDragActive) {
+                                dismissDragActive = true
+                                onDismissDragStart()
+                            }
+                            onDismissDragDelta(available.y)
+                            return Offset(0f, available.y)
+                        }
                     }
                     return Offset.Zero
+                }
+
+                override suspend fun onPreFling(available: Velocity): Velocity {
+                    if (dismissDragActive) {
+                        dismissDragActive = false
+                        onDismissDragEnd()
+                    }
+                    return Velocity.Zero
+                }
+
+                override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                    if (dismissDragActive) {
+                        dismissDragActive = false
+                        onDismissDragEnd()
+                    }
+                    return Velocity.Zero
                 }
             }
         }
