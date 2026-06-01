@@ -2006,7 +2006,7 @@ private fun PlayerCardPage(
         }
         val lyricsPanelEdgeInset = maxOf(0.dp, lyricsEdgeInset - 12.dp)
         val headerSpacer = if (compactPlayerLayout) 28.dp - coverLift else 42.dp - coverLift
-        val translationButtonTopOffset = 14.dp + 4.dp + headerSpacer + coverSize + 16.dp
+        val translationButtonTopOffset = 14.dp + 4.dp + headerSpacer + coverSize + 26.dp
         val coverTranslationXPx = with(density) {
             12.dp.toPx() * lyricsProgress
         }
@@ -2145,6 +2145,7 @@ private fun PlayerCardPage(
                         modifier = Modifier
                             .size(coverSize)
                             .align(Alignment.TopCenter)
+                            .playerDismissDrag(enabled = !lyricsVisible)
                             .pointerInput(song.id, lyricsVisible) {
                                 if (!lyricsVisible) {
                                     detectTapGestures(
@@ -2154,7 +2155,6 @@ private fun PlayerCardPage(
                                     )
                                 }
                             }
-                            .playerDismissDrag(enabled = !lyricsVisible)
                             .graphicsLayer {
                                 val scale = 1f - (1f - lyricsCoverScale) * lyricsProgress
                                 scaleX = scale
@@ -2698,7 +2698,10 @@ private fun LyricsPanel(
         Box(
             Modifier
                 .fillMaxSize()
-                .lyricsVerticalFade(edgeHeight = 30.dp)
+                .lyricsVerticalFade(
+                    topEdgeHeight = 30.dp,
+                    bottomEdgeHeight = 38.dp
+                )
         ) {
             Column(
                 Modifier
@@ -2766,7 +2769,8 @@ private fun LyricsMarqueeLine(
         val viewportWidthPx = constraints.maxWidth.toFloat()
         val leftInsetPx = with(density) { 12.dp.toPx() }
         var lineWidthPx by remember(text) { mutableFloatStateOf(0f) }
-        val effectiveLineWidthPx = lineWidthPx * if (active) 1.3f else 1f
+        val activeScale = 1.34f
+        val effectiveLineWidthPx = lineWidthPx * if (active) activeScale else 1f
         val hiddenDistancePx = (effectiveLineWidthPx + leftInsetPx - viewportWidthPx)
             .coerceAtLeast(0f)
         val marqueeOffset = remember(text) { Animatable(0f) }
@@ -2774,7 +2778,7 @@ private fun LyricsMarqueeLine(
             ((-marqueeOffset.value - 8.dp.toPx()) / 18.dp.toPx()).coerceIn(0f, 1f)
         }
         val lineScale by animateFloatAsState(
-            targetValue = if (active) 1.3f else 1f,
+            targetValue = if (active) activeScale else 1f,
             animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
         )
         val lineShift by animateFloatAsState(
@@ -2842,27 +2846,33 @@ private fun LyricsMarqueeLine(
                     color = Color.White.copy(alpha = if (active) 0.92f else 0.44f),
                     fontSize = 16.sp,
                     lineHeight = 28.sp,
-                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium
+                    fontFamily = FontFamily.SansSerif,
+                    fontWeight = FontWeight.Bold
                 )
             )
         }
     }
 }
 
-private fun Modifier.lyricsVerticalFade(edgeHeight: Dp): Modifier =
+private fun Modifier.lyricsVerticalFade(
+    topEdgeHeight: Dp,
+    bottomEdgeHeight: Dp
+): Modifier =
     graphicsLayer {
         compositingStrategy = CompositingStrategy.Offscreen
     }.drawWithContent {
         drawContent()
-        val edgePx = edgeHeight.toPx().coerceAtMost(size.height / 2f)
-        if (edgePx > 0f && size.height > 0f) {
-            val edgeStop = edgePx / size.height
+        val topEdgePx = topEdgeHeight.toPx().coerceAtMost(size.height / 2f)
+        val bottomEdgePx = bottomEdgeHeight.toPx().coerceAtMost(size.height / 2f)
+        if ((topEdgePx > 0f || bottomEdgePx > 0f) && size.height > 0f) {
+            val topStop = topEdgePx / size.height
+            val bottomStop = bottomEdgePx / size.height
             drawRect(
                 brush = Brush.verticalGradient(
                     colorStops = arrayOf(
                         0f to Color.Transparent,
-                        edgeStop to Color.Black,
-                        (1f - edgeStop) to Color.Black,
+                        topStop to Color.Black,
+                        (1f - bottomStop) to Color.Black,
                         1f to Color.Transparent
                     )
                 ),
