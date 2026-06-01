@@ -948,9 +948,7 @@ private fun MiniPlayerBar(
                 .shadow(
                     elevation = 1.dp,
                     shape = RoundedCornerShape(9.dp),
-                    clip = false,
-                    ambientColor = Color.Black.copy(alpha = 0.04f),
-                    spotColor = Color.Black.copy(alpha = 0.03f)
+                    clip = false
                 )
         )
 
@@ -1069,9 +1067,10 @@ private fun PlayerCardPage(
     BoxWithConstraints(modifier) {
         val screenHeight = constraints.maxHeight.toFloat()
         val offsetY = (1f - progress.value) * screenHeight + dragOffset.value
+        val compactPlayerLayout = maxHeight < 700.dp
         val coverSize = minOf(
             maxWidth - 56.dp,
-            if (maxHeight < 700.dp) 254.dp else 304.dp
+            if (compactPlayerLayout) 254.dp else 304.dp
         )
 
         Box(
@@ -1115,7 +1114,7 @@ private fun PlayerCardPage(
                         .background(Color.White.copy(alpha = 0.42f))
                 )
 
-                Spacer(Modifier.height(if (maxHeight < 700.dp) 28.dp else 42.dp))
+                Spacer(Modifier.height(if (compactPlayerLayout) 28.dp else 42.dp))
 
                 SolidCoverArt(
                     song = song,
@@ -1124,7 +1123,7 @@ private fun PlayerCardPage(
                         .clip(RoundedCornerShape(16.dp))
                 )
 
-                Spacer(Modifier.height(if (maxHeight < 700.dp) 28.dp else 38.dp))
+                Spacer(Modifier.height(if (compactPlayerLayout) 28.dp else 38.dp))
 
                 PlayerLine(
                     progress = 0.28f,
@@ -1132,7 +1131,7 @@ private fun PlayerCardPage(
                     height = 4.dp
                 )
 
-                Spacer(Modifier.height(if (maxHeight < 700.dp) 24.dp else 32.dp))
+                Spacer(Modifier.height(if (compactPlayerLayout) 24.dp else 32.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1174,7 +1173,7 @@ private fun PlayerCardPage(
                     }
                 }
 
-                Spacer(Modifier.height(if (maxHeight < 700.dp) 24.dp else 30.dp))
+                Spacer(Modifier.height(if (compactPlayerLayout) 24.dp else 30.dp))
 
                 PlayerLine(
                     progress = 0.68f,
@@ -1182,7 +1181,7 @@ private fun PlayerCardPage(
                     height = 3.dp
                 )
 
-                Spacer(Modifier.height(if (maxHeight < 700.dp) 22.dp else 28.dp))
+                Spacer(Modifier.height(if (compactPlayerLayout) 22.dp else 28.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1278,7 +1277,6 @@ private fun PlayerCardPage(
             }
         }
     }
-}
 
 @Composable
 private fun MiniCoverArt(
