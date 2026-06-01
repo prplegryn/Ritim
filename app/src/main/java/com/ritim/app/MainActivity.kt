@@ -70,6 +70,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -86,6 +87,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -125,6 +128,9 @@ private class PlaybackRuntimeTracker {
 }
 
 private const val previousRestartThresholdMs = 3_000L
+private const val metadataKeySampleRate = 38
+private const val metadataKeyBitsPerSample = 39
+private val michromaFontFamily = FontFamily(Font(R.font.michroma_regular))
 
 @Composable
 fun RitimApp() {
@@ -145,6 +151,7 @@ fun RitimApp() {
     val playbackRuntimeTracker = remember { PlaybackRuntimeTracker() }
     var seekRequestId by remember { mutableIntStateOf(0) }
     var seekRequest by remember { mutableStateOf<SeekRequest?>(null) }
+    var playerVolume by rememberSaveable { mutableStateOf(0.68f) }
     var favoriteSongIds by remember(context) {
         mutableStateOf(loadMusicLibraryIndex(context).favoriteSongIds)
     }
@@ -201,6 +208,7 @@ fun RitimApp() {
         song = currentSong,
         playing = playing,
         seekRequest = seekRequest,
+        volume = playerVolume,
         onPlayingChange = { playing = it },
         onProgressChange = {
             playbackRuntimeTracker.progress = it
@@ -262,9 +270,11 @@ fun RitimApp() {
                 song = currentSong,
                 playing = playing,
                 playbackProgress = playbackProgress,
+                volume = playerVolume,
                 favorite = favoriteSongIds.contains(currentSong.id),
                 onPlayingChange = { playing = it },
                 onSeek = requestSeek,
+                onVolumeChange = { playerVolume = it.coerceIn(0f, 1f) },
                 onFavoriteToggle = { toggleFavorite(currentSong) },
                 onPrevious = onPreviousSelected,
                 onNext = { selectRelativeSong(1) },
@@ -284,6 +294,7 @@ private fun AudioPlaybackEffect(
     song: SongSample,
     playing: Boolean,
     seekRequest: SeekRequest?,
+    volume: Float,
     onPlayingChange: (Boolean) -> Unit,
     onProgressChange: (Float) -> Unit,
     onPositionChange: (Long) -> Unit
@@ -329,6 +340,7 @@ private fun AudioPlaybackEffect(
         val existingPlayer = playerHolder.value
         if (existingPlayer != null) {
             runCatching {
+                existingPlayer.setOutputVolume(volume)
                 existingPlayer.start()
             }.onFailure {
                 existingPlayer.release()
@@ -353,6 +365,7 @@ private fun AudioPlaybackEffect(
 
         playerHolder.value = player
         preparedSongId = song.id
+        player.setOutputVolume(volume)
         seekRequest?.let { request ->
             player.seekToProgress(request.progress)?.let { targetPosition ->
                 onProgressChange(request.progress.coerceIn(0f, 1f))
@@ -390,6 +403,10 @@ private fun AudioPlaybackEffect(
             onProgressChange(0f)
             onPositionChange(0L)
         }
+    }
+
+    LaunchedEffect(volume) {
+        playerHolder.value?.setOutputVolume(volume)
     }
 
     LaunchedEffect(song.id, seekRequest?.id) {
@@ -455,6 +472,11 @@ private fun MediaPlayer.seekToProgress(progress: Float): Int? =
             targetPosition
         }
     }.getOrNull()
+
+private fun MediaPlayer.setOutputVolume(volume: Float) {
+    val safeVolume = volume.coerceIn(0f, 1f)
+    runCatching { setVolume(safeVolume, safeVolume) }
+}
 
 private fun createPreparedMediaPlayer(prepareBlock: MediaPlayer.() -> Unit): MediaPlayer? {
     val player = MediaPlayer()
@@ -837,7 +859,8 @@ private data class SongSample(
     val albumId: Long = 0L,
     val durationMs: Long = 0L,
     val dateAddedSeconds: Long = 0L,
-    val contentUri: Uri? = null
+    val contentUri: Uri? = null,
+    val audioQualityLabel: String = ""
 )
 
 private data class MusicLibraryIndex(
@@ -991,6 +1014,7 @@ private suspend fun saveCachedMusicIndex(context: Context, songs: List<SongSampl
                         .put("durationMs", song.durationMs)
                         .put("dateAddedSeconds", song.dateAddedSeconds)
                         .put("contentUri", song.contentUri?.toString())
+                        .put("audioQualityLabel", song.audioQualityLabel)
                 )
             }
             musicIndexFile(context).writeText(array.toString())
@@ -1017,7 +1041,8 @@ private fun loadCachedMusicIndex(context: Context): List<SongSample> =
                         albumId = item.optLong("albumId"),
                         durationMs = item.optLong("durationMs"),
                         dateAddedSeconds = item.optLong("dateAddedSeconds"),
-                        contentUri = uriText?.let(Uri::parse)
+                        contentUri = uriText?.let(Uri::parse),
+                        audioQualityLabel = item.optString("audioQualityLabel")
                     )
                 )
             }
@@ -1136,16 +1161,17 @@ private suspend fun loadMusicFolderSongs(context: Context): List<SongSample> =
             @Suppress("DEPRECATION")
             MediaStore.Audio.Media.DATA
         }
-        val projection = arrayOf(
-            MediaStore.Audio.Media._ID,
-            MediaStore.Audio.Media.TITLE,
-            MediaStore.Audio.Media.DISPLAY_NAME,
-            MediaStore.Audio.Media.ARTIST,
-            MediaStore.Audio.Media.ALBUM_ID,
-            MediaStore.Audio.Media.DURATION,
-            MediaStore.Audio.Media.DATE_ADDED,
-            pathColumn
-        )
+        val projection = buildList {
+            add(MediaStore.Audio.Media._ID)
+            add(MediaStore.Audio.Media.TITLE)
+            add(MediaStore.Audio.Media.DISPLAY_NAME)
+            add(MediaStore.Audio.Media.MIME_TYPE)
+            add(MediaStore.Audio.Media.ARTIST)
+            add(MediaStore.Audio.Media.ALBUM_ID)
+            add(MediaStore.Audio.Media.DURATION)
+            add(MediaStore.Audio.Media.DATE_ADDED)
+            add(pathColumn)
+        }.toTypedArray()
         val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             "${MediaStore.Audio.Media.IS_MUSIC} != 0 AND $pathColumn LIKE ?"
         } else {
@@ -1169,6 +1195,7 @@ private suspend fun loadMusicFolderSongs(context: Context): List<SongSample> =
                 val idIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
                 val titleIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
                 val displayNameIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)
+                val mimeTypeIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.MIME_TYPE)
                 val artistIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
                 val albumIdIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM_ID)
                 val durationIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
@@ -1178,6 +1205,10 @@ private suspend fun loadMusicFolderSongs(context: Context): List<SongSample> =
                     while (cursor.moveToNext()) {
                         val id = cursor.getLong(idIndex)
                         val displayName = cursorString(cursor, displayNameIndex)
+                        val contentUri = ContentUris.withAppendedId(
+                            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                            id
+                        )
                         val title = cleanSongTitle(
                             cursorString(cursor, titleIndex),
                             displayName
@@ -1194,9 +1225,13 @@ private suspend fun loadMusicFolderSongs(context: Context): List<SongSample> =
                                 albumId = cursorLong(cursor, albumIdIndex),
                                 durationMs = cursorLong(cursor, durationIndex),
                                 dateAddedSeconds = cursorLong(cursor, dateAddedIndex),
-                                contentUri = ContentUris.withAppendedId(
-                                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                                    id
+                                contentUri = contentUri,
+                                audioQualityLabel = detectAudioQualityLabel(
+                                    context = context,
+                                    uri = contentUri,
+                                    displayName = displayName,
+                                    mediaStoreMimeType = cursorString(cursor, mimeTypeIndex),
+                                    mediaStoreBitrate = 0L
                                 )
                             )
                         )
@@ -1222,6 +1257,117 @@ private fun cursorString(cursor: android.database.Cursor, index: Int): String? =
 
 private fun cursorLong(cursor: android.database.Cursor, index: Int): Long =
     if (cursor.isNull(index)) 0L else cursor.getLong(index)
+
+private data class AudioQualityMetadata(
+    val mimeType: String?,
+    val bitrate: Long,
+    val sampleRate: Long,
+    val bitsPerSample: Int
+)
+
+private fun detectAudioQualityLabel(
+    context: Context,
+    uri: Uri,
+    displayName: String?,
+    mediaStoreMimeType: String?,
+    mediaStoreBitrate: Long
+): String {
+    val metadata = readAudioQualityMetadata(
+        context = context,
+        uri = uri,
+        fallbackMimeType = mediaStoreMimeType,
+        fallbackBitrate = mediaStoreBitrate
+    )
+    val extension = displayName
+        ?.substringAfterLast('.', "")
+        ?.lowercase()
+        .orEmpty()
+    val mime = metadata.mimeType.orEmpty().lowercase()
+
+    return when {
+        isDsdAudio(extension, mime) -> dsdQualityLabel(metadata.sampleRate)
+        isLosslessAudio(extension, mime) -> {
+            if (metadata.bitsPerSample >= 24 && metadata.sampleRate >= 88_200L) {
+                "HI-RES"
+            } else {
+                "LOSSLESS"
+            }
+        }
+        isLossyAudio(extension, mime) && metadata.bitrate >= 192_000L -> "HQ"
+        else -> ""
+    }
+}
+
+private fun readAudioQualityMetadata(
+    context: Context,
+    uri: Uri,
+    fallbackMimeType: String?,
+    fallbackBitrate: Long
+): AudioQualityMetadata {
+    val retriever = MediaMetadataRetriever()
+    return runCatching {
+        retriever.setDataSource(context, uri)
+        AudioQualityMetadata(
+            mimeType = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE)
+                ?: fallbackMimeType,
+            bitrate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
+                ?.toLongOrNull()
+                ?: fallbackBitrate,
+            sampleRate = retriever.extractMetadata(metadataKeySampleRate)
+                ?.toLongOrNull()
+                ?: 0L,
+            bitsPerSample = retriever.extractMetadata(metadataKeyBitsPerSample)
+                ?.toIntOrNull()
+                ?: 0
+        )
+    }.getOrElse {
+        AudioQualityMetadata(
+            mimeType = fallbackMimeType,
+            bitrate = fallbackBitrate,
+            sampleRate = 0L,
+            bitsPerSample = 0
+        )
+    }.also {
+        runCatching { retriever.release() }
+    }
+}
+
+private fun isDsdAudio(extension: String, mime: String): Boolean =
+    extension in setOf("dsf", "dff", "dsd") ||
+        mime.contains("dsd") ||
+        mime.contains("dsf") ||
+        mime.contains("dff")
+
+private fun dsdQualityLabel(sampleRate: Long): String =
+    when {
+        sampleRate >= 45_158_400L -> "DSD1024"
+        sampleRate >= 22_579_200L -> "DSD512"
+        sampleRate >= 11_289_600L -> "DSD256"
+        sampleRate >= 5_644_800L -> "DSD128"
+        sampleRate >= 2_822_400L -> "DSD64"
+        else -> ""
+    }
+
+private fun isLosslessAudio(extension: String, mime: String): Boolean =
+    extension in setOf("flac", "wav", "wave", "aiff", "aif", "aifc", "alac", "ape", "wv") ||
+        mime.contains("flac") ||
+        mime.contains("wav") ||
+        mime.contains("wave") ||
+        mime.contains("aiff") ||
+        mime.contains("alac") ||
+        mime.contains("ape") ||
+        mime.contains("wavpack")
+
+private fun isLossyAudio(extension: String, mime: String): Boolean =
+    extension in setOf("mp3", "m4a", "aac", "ogg", "opus", "wma", "mp4", "3gp") ||
+        mime.contains("mpeg") ||
+        mime.contains("mp4") ||
+        mime.contains("aac") ||
+        mime.contains("ogg") ||
+        mime.contains("opus") ||
+        mime.contains("vorbis") ||
+        mime.contains("wma") ||
+        mime.contains("3gpp")
 
 private fun cleanSongTitle(title: String?, displayName: String?): String {
     val normalized = title?.takeIf { it.isMeaningfulMediaText() }
@@ -1599,9 +1745,11 @@ private fun PlayerCardPage(
     song: SongSample,
     playing: Boolean,
     playbackProgress: Float,
+    volume: Float,
     favorite: Boolean,
     onPlayingChange: (Boolean) -> Unit,
     onSeek: (Float) -> Unit,
+    onVolumeChange: (Float) -> Unit,
     onFavoriteToggle: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
@@ -1634,6 +1782,11 @@ private fun PlayerCardPage(
             maxWidth - 56.dp,
             if (compactPlayerLayout) 254.dp else 304.dp
         )
+        val sideControlSize = if (compactPlayerLayout) 66.dp else 76.dp
+        val mainControlSize = if (compactPlayerLayout) 92.dp else 104.dp
+        val sideControlIconSize = if (compactPlayerLayout) 42.dp else 48.dp
+        val mainControlIconSize = if (compactPlayerLayout) 56.dp else 64.dp
+        val controlSpacer = if (compactPlayerLayout) 14.dp else 18.dp
         SideEffect {
             onBackdropProgressChange(backdropProgress)
         }
@@ -1694,8 +1847,9 @@ private fun PlayerCardPage(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
-                    verticalArrangement = Arrangement.SpaceEvenly,
+                        .weight(1f)
+                        .padding(top = if (compactPlayerLayout) 10.dp else 14.dp),
+                    verticalArrangement = Arrangement.SpaceBetween,
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     PlayerSongInfoRow(
@@ -1708,6 +1862,7 @@ private fun PlayerCardPage(
                     PlayerTimeline(
                         progress = playbackProgress,
                         durationMs = song.durationMs,
+                        qualityLabel = song.audioQualityLabel,
                         onSeek = onSeek,
                         modifier = Modifier.width(coverSize)
                     )
@@ -1719,43 +1874,43 @@ private fun PlayerCardPage(
                     ) {
                         PlayerIconButton(
                             contentDescription = "上一曲",
-                            size = 52.dp,
+                            size = sideControlSize,
                             onClick = onPrevious
                         ) {
                             PreviousGlyph(
-                                modifier = Modifier.size(30.dp),
+                                modifier = Modifier.size(sideControlIconSize),
                                 color = Color.White
                             )
                         }
-                        Spacer(Modifier.width(28.dp))
+                        Spacer(Modifier.width(controlSpacer))
                         PlayerIconButton(
                             contentDescription = if (playing) "暂停" else "播放",
-                            size = 70.dp,
+                            size = mainControlSize,
                             onClick = { onPlayingChange(!playing) }
                         ) {
                             PlayPauseGlyph(
                                 playing = playing,
-                                modifier = Modifier.size(40.dp),
+                                modifier = Modifier.size(mainControlIconSize),
                                 color = Color.White
                             )
                         }
-                        Spacer(Modifier.width(28.dp))
+                        Spacer(Modifier.width(controlSpacer))
                         PlayerIconButton(
                             contentDescription = "下一曲",
-                            size = 52.dp,
+                            size = sideControlSize,
                             onClick = onNext
                         ) {
                             NextGlyph(
-                                modifier = Modifier.size(30.dp),
+                                modifier = Modifier.size(sideControlIconSize),
                                 color = Color.White
                             )
                         }
                     }
 
-                    PlayerLine(
-                        progress = 0.68f,
-                        modifier = Modifier.fillMaxWidth(),
-                        height = 3.dp
+                    PlayerVolumeControl(
+                        volume = volume,
+                        onVolumeChange = onVolumeChange,
+                        modifier = Modifier.width(coverSize)
                     )
 
                     Row(
@@ -2003,6 +2158,7 @@ private fun PlayerSongInfoRow(
 private fun PlayerTimeline(
     progress: Float,
     durationMs: Long,
+    qualityLabel: String,
     onSeek: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -2017,21 +2173,37 @@ private fun PlayerTimeline(
             height = 4.dp
         )
         Spacer(Modifier.height(4.dp))
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(15.dp)
         ) {
-            PlayerTimeText("-${formatPlaybackDuration(remainingMs)}")
-            PlayerTimeText(formatPlaybackDuration(totalMs))
+            PlayerTimeText(
+                text = "-${formatPlaybackDuration(remainingMs)}",
+                modifier = Modifier.align(Alignment.CenterStart)
+            )
+            if (qualityLabel.isNotBlank()) {
+                PlayerQualityText(
+                    text = qualityLabel,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
+            PlayerTimeText(
+                text = formatPlaybackDuration(totalMs),
+                modifier = Modifier.align(Alignment.CenterEnd)
+            )
         }
     }
 }
 
 @Composable
-private fun PlayerTimeText(text: String) {
+private fun PlayerTimeText(
+    text: String,
+    modifier: Modifier = Modifier
+) {
     BasicText(
         text,
+        modifier = modifier,
         maxLines = 1,
         style = TextStyle(
             color = Color.White.copy(alpha = 0.52f),
@@ -2039,6 +2211,56 @@ private fun PlayerTimeText(text: String) {
             fontWeight = FontWeight.Medium
         )
     )
+}
+
+@Composable
+private fun PlayerQualityText(
+    text: String,
+    modifier: Modifier = Modifier
+) {
+    BasicText(
+        text,
+        modifier = modifier,
+        maxLines = 1,
+        style = TextStyle(
+            color = Color.White.copy(alpha = 0.56f),
+            fontSize = 11.sp,
+            fontFamily = michromaFontFamily,
+            fontWeight = FontWeight.Normal
+        )
+    )
+}
+
+@Composable
+private fun PlayerVolumeControl(
+    volume: Float,
+    onVolumeChange: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier.height(26.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        VolumeGlyph(
+            loud = false,
+            modifier = Modifier.size(13.dp),
+            color = Color.White.copy(alpha = 0.56f)
+        )
+        Spacer(Modifier.width(10.dp))
+        ScrubbablePlayerLine(
+            progress = volume,
+            onSeek = onVolumeChange,
+            modifier = Modifier.weight(1f),
+            height = 3.dp
+        )
+        Spacer(Modifier.width(10.dp))
+        VolumeGlyph(
+            loud = true,
+            modifier = Modifier.size(15.dp),
+            color = Color.White.copy(alpha = 0.56f)
+        )
+    }
 }
 
 private fun formatPlaybackDuration(durationMs: Long): String {
@@ -2217,6 +2439,47 @@ private fun MoreGlyph(
                 color = color,
                 radius = radius,
                 center = Offset(size.width * x, size.height * 0.50f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun VolumeGlyph(
+    loud: Boolean,
+    modifier: Modifier = Modifier,
+    color: Color = Color.White
+) {
+    Canvas(modifier) {
+        val speaker = Path().apply {
+            moveTo(size.width * 0.12f, size.height * 0.40f)
+            lineTo(size.width * 0.30f, size.height * 0.40f)
+            lineTo(size.width * 0.52f, size.height * 0.22f)
+            lineTo(size.width * 0.52f, size.height * 0.78f)
+            lineTo(size.width * 0.30f, size.height * 0.60f)
+            lineTo(size.width * 0.12f, size.height * 0.60f)
+            close()
+        }
+        drawPath(speaker, color)
+        val strokeWidth = size.minDimension * 0.09f
+        drawArc(
+            color = color,
+            startAngle = -38f,
+            sweepAngle = 76f,
+            useCenter = false,
+            topLeft = Offset(size.width * 0.38f, size.height * 0.33f),
+            size = Size(size.width * 0.28f, size.height * 0.34f),
+            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+        )
+        if (loud) {
+            drawArc(
+                color = color,
+                startAngle = -42f,
+                sweepAngle = 84f,
+                useCenter = false,
+                topLeft = Offset(size.width * 0.38f, size.height * 0.20f),
+                size = Size(size.width * 0.48f, size.height * 0.60f),
+                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
             )
         }
     }
