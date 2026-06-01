@@ -58,7 +58,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -66,8 +65,10 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -119,6 +120,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -386,6 +388,9 @@ private fun AudioPlaybackEffect(
     val scope = rememberCoroutineScope()
     val playerHolder = remember { mutableStateOf<MediaPlayer?>(null) }
     var preparedSongId by remember { mutableStateOf<Long?>(null) }
+    val latestOnPlayingChange by rememberUpdatedState(onPlayingChange)
+    val latestOnProgressChange by rememberUpdatedState(onProgressChange)
+    val latestOnPositionChange by rememberUpdatedState(onPositionChange)
 
     DisposableEffect(Unit) {
         onDispose {
@@ -399,8 +404,8 @@ private fun AudioPlaybackEffect(
             playerHolder.value?.release()
             playerHolder.value = null
             preparedSongId = song.id
-            onProgressChange(0f)
-            onPositionChange(0L)
+            latestOnProgressChange(0f)
+            latestOnPositionChange(0L)
         }
 
         if (!playing) {
@@ -414,9 +419,9 @@ private fun AudioPlaybackEffect(
 
         val uri = song.contentUri
         if (uri == null) {
-            onPlayingChange(false)
-            onProgressChange(0f)
-            onPositionChange(0L)
+            latestOnPlayingChange(false)
+            latestOnProgressChange(0f)
+            latestOnPositionChange(0L)
             return@LaunchedEffect
         }
 
@@ -428,9 +433,9 @@ private fun AudioPlaybackEffect(
                 existingPlayer.release()
                 playerHolder.value = null
                 preparedSongId = null
-                onPlayingChange(false)
-                onProgressChange(0f)
-                onPositionChange(0L)
+                latestOnPlayingChange(false)
+                latestOnProgressChange(0f)
+                latestOnPositionChange(0L)
             }
             return@LaunchedEffect
         }
@@ -439,9 +444,9 @@ private fun AudioPlaybackEffect(
         if (player == null) {
             playerHolder.value = null
             preparedSongId = null
-            onPlayingChange(false)
-            onProgressChange(0f)
-            onPositionChange(0L)
+            latestOnPlayingChange(false)
+            latestOnProgressChange(0f)
+            latestOnPositionChange(0L)
             return@LaunchedEffect
         }
 
@@ -449,16 +454,16 @@ private fun AudioPlaybackEffect(
         preparedSongId = song.id
         seekRequest?.let { request ->
             player.seekToProgress(request.progress)?.let { targetPosition ->
-                onProgressChange(request.progress.coerceIn(0f, 1f))
-                onPositionChange(targetPosition.toLong())
+                latestOnProgressChange(request.progress.coerceIn(0f, 1f))
+                latestOnPositionChange(targetPosition.toLong())
             }
         }
         player.setOnCompletionListener { completedPlayer ->
             scope.launch {
                 runCatching { completedPlayer.seekTo(0) }
-                onProgressChange(0f)
-                onPositionChange(0L)
-                onPlayingChange(false)
+                latestOnProgressChange(0f)
+                latestOnPositionChange(0L)
+                latestOnPlayingChange(false)
             }
         }
         player.setOnErrorListener { failedPlayer, _, _ ->
@@ -468,9 +473,9 @@ private fun AudioPlaybackEffect(
                     playerHolder.value = null
                 }
                 preparedSongId = null
-                onProgressChange(0f)
-                onPositionChange(0L)
-                onPlayingChange(false)
+                latestOnProgressChange(0f)
+                latestOnPositionChange(0L)
+                latestOnPlayingChange(false)
             }
             true
         }
@@ -480,9 +485,9 @@ private fun AudioPlaybackEffect(
             player.release()
             playerHolder.value = null
             preparedSongId = null
-            onPlayingChange(false)
-            onProgressChange(0f)
-            onPositionChange(0L)
+            latestOnPlayingChange(false)
+            latestOnProgressChange(0f)
+            latestOnPositionChange(0L)
         }
     }
 
@@ -490,8 +495,8 @@ private fun AudioPlaybackEffect(
         val request = seekRequest ?: return@LaunchedEffect
         val player = playerHolder.value ?: return@LaunchedEffect
         player.seekToProgress(request.progress)?.let { targetPosition ->
-            onProgressChange(request.progress.coerceIn(0f, 1f))
-            onPositionChange(targetPosition.toLong())
+            latestOnProgressChange(request.progress.coerceIn(0f, 1f))
+            latestOnPositionChange(targetPosition.toLong())
         }
     }
 
@@ -506,8 +511,8 @@ private fun AudioPlaybackEffect(
                     0f
                 }
             }.getOrDefault(0f)
-            onProgressChange(progress.coerceIn(0f, 1f))
-            onPositionChange(position.toLong())
+            latestOnProgressChange(progress.coerceIn(0f, 1f))
+            latestOnPositionChange(position.toLong())
             delay(300)
         }
     }
@@ -606,6 +611,7 @@ private fun RitimPageBackground(
     var previousIndex by remember { mutableIntStateOf(targetIndex) }
     var direction by remember { mutableIntStateOf(0) }
     var searchTransition by remember { mutableStateOf(false) }
+    var transitionActive by remember { mutableStateOf(false) }
     val progress = remember { Animatable(1f) }
 
     LaunchedEffect(targetIndex) {
@@ -615,6 +621,7 @@ private fun RitimPageBackground(
             direction = if (targetIndex > currentIndex) 1 else -1
             searchTransition = isSearchTransition
             currentIndex = targetIndex
+            transitionActive = true
             progress.snapTo(0f)
             progress.animateTo(
                 targetValue = 1f,
@@ -623,11 +630,12 @@ private fun RitimPageBackground(
                     easing = FastOutSlowInEasing
                 )
             )
+            transitionActive = false
         }
     }
 
     Box(modifier) {
-        if (progress.value < 1f) {
+        if (transitionActive) {
             PageLayer(
                 pageIndex = previousIndex,
                 songs = songs,
@@ -1367,7 +1375,16 @@ private data class LyricsTranslationUiState(
         get() = status == LyricsTranslationStatus.Loading
 }
 
-private val coverImageCache = mutableMapOf<Long, ImageBitmap?>()
+private const val coverDecodeMaxSizePx = 1024
+private const val maxCoverImageCacheEntries = 96
+private val coverImageCache = object : java.util.LinkedHashMap<String, ImageBitmap?>(
+    maxCoverImageCacheEntries,
+    0.75f,
+    true
+) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ImageBitmap?>?): Boolean =
+        size > maxCoverImageCacheEntries
+}
 private val albumArtBaseUri: Uri = Uri.parse("content://media/external/audio/albumart")
 
 private data class CoverImageState(
@@ -1376,14 +1393,15 @@ private data class CoverImageState(
 )
 
 private fun initialCoverState(context: Context, song: SongSample): CoverImageState {
-    val memoryCover = cachedCoverImage(song.id)
-    if (memoryCover != null || hasCachedCoverImage(song.id)) {
+    val coverKey = coverCacheKey(song.albumId, song.contentUri)
+    val memoryCover = cachedCoverImage(coverKey)
+    if (memoryCover != null || hasCachedCoverImage(coverKey)) {
         return CoverImageState(image = memoryCover, loaded = true)
     }
     val diskCover = loadCachedCoverBitmap(context, song.albumId, song.contentUri)?.asImageBitmap()
     if (diskCover != null) {
         synchronized(coverImageCache) {
-            coverImageCache[song.id] = diskCover
+            coverImageCache[coverKey] = diskCover
         }
         return CoverImageState(image = diskCover, loaded = true)
     }
@@ -1398,19 +1416,15 @@ private fun rememberSongCover(song: SongSample): CoverImageState {
     }
 
     LaunchedEffect(context, song.id, song.contentUri) {
-        if (!hasCachedCoverImage(song.id)) {
-            val loadedImage = loadSongCoverImage(
-                context = context,
-                uri = song.contentUri,
-                albumId = song.albumId
-            )
-            synchronized(coverImageCache) {
-                coverImageCache[song.id] = loadedImage
-            }
+        val coverKey = coverCacheKey(song.albumId, song.contentUri)
+        if (!hasCachedCoverImage(coverKey)) {
+            val loadedImage = CoverImageRequests
+                .request(context.applicationContext, song.albumId, song.contentUri)
+                .await()
             coverState = CoverImageState(image = loadedImage, loaded = true)
         } else {
             coverState = CoverImageState(
-                image = cachedCoverImage(song.id),
+                image = cachedCoverImage(coverKey),
                 loaded = true
             )
         }
@@ -1419,15 +1433,43 @@ private fun rememberSongCover(song: SongSample): CoverImageState {
     return coverState
 }
 
-private fun hasCachedCoverImage(songId: Long): Boolean =
+private fun hasCachedCoverImage(coverKey: String): Boolean =
     synchronized(coverImageCache) {
-        coverImageCache.containsKey(songId)
+        coverImageCache.containsKey(coverKey)
     }
 
-private fun cachedCoverImage(songId: Long): ImageBitmap? =
+private fun cachedCoverImage(coverKey: String): ImageBitmap? =
     synchronized(coverImageCache) {
-        coverImageCache[songId]
+        coverImageCache[coverKey]
     }
+
+private object CoverImageRequests {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val lock = Any()
+    private val jobs = mutableMapOf<String, Deferred<ImageBitmap?>>()
+
+    fun request(context: Context, albumId: Long, uri: Uri?): Deferred<ImageBitmap?> {
+        val coverKey = coverCacheKey(albumId, uri)
+        return synchronized(lock) {
+            jobs[coverKey]?.let { return@synchronized it }
+            val job = scope.async {
+                try {
+                    loadSongCoverImage(context.applicationContext, uri, albumId).also { loadedImage ->
+                        synchronized(coverImageCache) {
+                            coverImageCache[coverKey] = loadedImage
+                        }
+                    }
+                } finally {
+                    synchronized(lock) {
+                        jobs.remove(coverKey)
+                    }
+                }
+            }
+            jobs[coverKey] = job
+            job
+        }
+    }
+}
 
 private suspend fun loadSongCoverImage(
     context: Context,
@@ -1443,7 +1485,7 @@ private suspend fun loadSongCoverImage(
             try {
                 retriever.setDataSource(context, uri)
                 val data = retriever.embeddedPicture ?: return@runCatching null
-                BitmapFactory.decodeByteArray(data, 0, data.size)
+                decodeSampledBitmap(data)
             } finally {
                 runCatching { retriever.release() }
             }
@@ -1454,7 +1496,7 @@ private suspend fun loadSongCoverImage(
             saveCoverBitmap(context, albumId, uri, bitmap)
         }
         bitmap?.asImageBitmap()
-    }
+}
 
 private fun loadAlbumArtImage(context: Context, albumId: Long): ImageBitmap? {
     if (albumId <= 0L) return null
@@ -1466,7 +1508,7 @@ private fun loadAlbumArtBitmap(context: Context, albumId: Long): Bitmap? {
     val albumArtUri = ContentUris.withAppendedId(albumArtBaseUri, albumId)
     return runCatching {
         context.contentResolver.openInputStream(albumArtUri)?.use { stream ->
-            BitmapFactory.decodeStream(stream)
+            decodeSampledBitmap(stream.readBytes())
         }
     }.getOrNull()
 }
@@ -1474,7 +1516,7 @@ private fun loadAlbumArtBitmap(context: Context, albumId: Long): Bitmap? {
 private fun loadCachedCoverBitmap(context: Context, albumId: Long, uri: Uri?): Bitmap? {
     val file = coverCacheFile(context, albumId, uri)
     return if (file.exists()) {
-        runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
+        runCatching { decodeSampledBitmap(file.readBytes()) }.getOrNull()
     } else {
         null
     }
@@ -1491,12 +1533,44 @@ private fun saveCoverBitmap(context: Context, albumId: Long, uri: Uri?, bitmap: 
 }
 
 private fun coverCacheFile(context: Context, albumId: Long, uri: Uri?): File {
-    val rawKey = if (albumId > 0L) {
+    return File(File(context.cacheDir, "covers"), "${coverCacheKey(albumId, uri)}.jpg")
+}
+
+private fun coverCacheKey(albumId: Long, uri: Uri?): String =
+    if (albumId > 0L) {
         "album_$albumId"
     } else {
         "song_${stableSongSeed(uri?.toString().orEmpty())}"
     }
-    return File(File(context.cacheDir, "covers"), "$rawKey.jpg")
+
+private fun decodeSampledBitmap(
+    data: ByteArray,
+    maxSizePx: Int = coverDecodeMaxSizePx
+): Bitmap? {
+    if (data.isEmpty()) return null
+    val boundsOptions = BitmapFactory.Options().apply {
+        inJustDecodeBounds = true
+    }
+    BitmapFactory.decodeByteArray(data, 0, data.size, boundsOptions)
+    val sampleSize = calculateBitmapSampleSize(
+        width = boundsOptions.outWidth,
+        height = boundsOptions.outHeight,
+        maxSizePx = maxSizePx
+    )
+    val decodeOptions = BitmapFactory.Options().apply {
+        inSampleSize = sampleSize
+    }
+    return BitmapFactory.decodeByteArray(data, 0, data.size, decodeOptions)
+}
+
+private fun calculateBitmapSampleSize(width: Int, height: Int, maxSizePx: Int): Int {
+    if (width <= 0 || height <= 0 || maxSizePx <= 0) return 1
+    if (width <= maxSizePx && height <= maxSizePx) return 1
+    var sampleSize = 1
+    while (width / sampleSize > maxSizePx || height / sampleSize > maxSizePx) {
+        sampleSize *= 2
+    }
+    return sampleSize.coerceAtLeast(1)
 }
 
 private suspend fun saveCachedMusicIndex(context: Context, songs: List<SongSample>) =
@@ -2024,9 +2098,8 @@ private fun parseLrcText(text: String): List<LrcLine> {
 @Composable
 private fun rememberMusicFolderSongs(): List<SongSample> {
     val context = LocalContext.current
-    var songs by remember {
-        mutableStateOf(loadCachedMusicIndex(context))
-    }
+    val cachedSongs = remember(context) { loadCachedMusicIndex(context) }
+    var songs by remember(context) { mutableStateOf(cachedSongs) }
     var permissionGranted by remember { mutableStateOf(hasAudioReadPermission(context)) }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -2044,7 +2117,7 @@ private fun rememberMusicFolderSongs(): List<SongSample> {
 
     LaunchedEffect(context, permissionGranted) {
         if (permissionGranted) {
-            val loadedSongs = loadMusicFolderSongs(context)
+            val loadedSongs = loadMusicFolderSongs(context, songs)
             if (loadedSongs.isNotEmpty()) {
                 songs = loadedSongs
                 saveCachedMusicIndex(context, loadedSongs)
@@ -2092,9 +2165,13 @@ private fun homeSectionsFromSongs(songs: List<SongSample>): List<HomeSectionData
     )
 }
 
-private suspend fun loadMusicFolderSongs(context: Context): List<SongSample> =
+private suspend fun loadMusicFolderSongs(
+    context: Context,
+    cachedSongs: List<SongSample> = emptyList()
+): List<SongSample> =
     withContext(Dispatchers.IO) {
         if (!hasAudioReadPermission(context)) return@withContext emptyList()
+        val cachedSongsById = cachedSongs.associateBy { it.id }
 
         val pathColumn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Audio.Media.RELATIVE_PATH
@@ -2148,6 +2225,9 @@ private suspend fun loadMusicFolderSongs(context: Context): List<SongSample> =
                         val id = cursor.getLong(idIndex)
                         val displayName = cursorString(cursor, displayNameIndex)
                         val pathText = cursorString(cursor, pathIndex).orEmpty()
+                        val albumId = cursorLong(cursor, albumIdIndex)
+                        val durationMs = cursorLong(cursor, durationIndex)
+                        val dateAddedSeconds = cursorLong(cursor, dateAddedIndex)
                         val contentUri = ContentUris.withAppendedId(
                             MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
                             id
@@ -2158,6 +2238,19 @@ private suspend fun loadMusicFolderSongs(context: Context): List<SongSample> =
                         )
                         val artist = cleanArtistName(cursorString(cursor, artistIndex))
                         val seed = stableSongSeed("$id|$title|$artist")
+                        val cachedSong = cachedSongsById[id]
+                            ?.takeIf { cached ->
+                                cached.albumId == albumId &&
+                                    cached.durationMs == durationMs &&
+                                    cached.displayName == displayName.orEmpty()
+                            }
+                        val audioQualityLabel = cachedSong?.audioQualityLabel ?: detectAudioQualityLabel(
+                            context = context,
+                            uri = contentUri,
+                            displayName = displayName,
+                            mediaStoreMimeType = cursorString(cursor, mimeTypeIndex),
+                            mediaStoreBitrate = 0L
+                        )
                         add(
                             SongSample(
                                 id = id,
@@ -2165,17 +2258,11 @@ private suspend fun loadMusicFolderSongs(context: Context): List<SongSample> =
                                 artist = artist,
                                 colors = paletteForSeed(seed),
                                 seed = seed,
-                                albumId = cursorLong(cursor, albumIdIndex),
-                                durationMs = cursorLong(cursor, durationIndex),
-                                dateAddedSeconds = cursorLong(cursor, dateAddedIndex),
+                                albumId = albumId,
+                                durationMs = durationMs,
+                                dateAddedSeconds = dateAddedSeconds,
                                 contentUri = contentUri,
-                                audioQualityLabel = detectAudioQualityLabel(
-                                    context = context,
-                                    uri = contentUri,
-                                    displayName = displayName,
-                                    mediaStoreMimeType = cursorString(cursor, mimeTypeIndex),
-                                    mediaStoreBitrate = 0L
-                                ),
+                                audioQualityLabel = audioQualityLabel,
                                 displayName = displayName.orEmpty(),
                                 relativePath = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                                     pathText
@@ -2737,6 +2824,7 @@ private fun PlayerCardPage(
     val progress = remember { Animatable(0f) }
     val dragOffset = remember { Animatable(0f) }
     var lastDownwardDrag by remember { mutableFloatStateOf(0f) }
+    val latestOnBackdropProgressChange by rememberUpdatedState(onBackdropProgressChange)
     var translationActiveSongId by rememberSaveable { mutableStateOf<Long?>(null) }
     val translationActive = translationActiveSongId == song.id
     val lyricsState = rememberSongLyricsState(song)
@@ -2795,12 +2883,6 @@ private fun PlayerCardPage(
     BoxWithConstraints(modifier) {
         val density = LocalDensity.current
         val screenHeight = constraints.maxHeight.toFloat()
-        val offsetY = (1f - progress.value) * screenHeight + dragOffset.value
-        val backdropProgress = if (screenHeight > 0f) {
-            (1f - offsetY / screenHeight).coerceIn(0f, 1f)
-        } else {
-            progress.value.coerceIn(0f, 1f)
-        }
         val compactPlayerLayout = maxHeight < 700.dp
         val coverSize = minOf(
             maxWidth - 56.dp,
@@ -2900,15 +2982,25 @@ private fun PlayerCardPage(
                     )
                 }
             }
-        SideEffect {
-            onBackdropProgressChange(backdropProgress)
+
+        LaunchedEffect(screenHeight) {
+            snapshotFlow {
+                val offsetY = (1f - progress.value) * screenHeight + dragOffset.value
+                if (screenHeight > 0f) {
+                    (1f - offsetY / screenHeight).coerceIn(0f, 1f)
+                } else {
+                    progress.value.coerceIn(0f, 1f)
+                }
+            }.collect { backdropProgress ->
+                latestOnBackdropProgressChange(backdropProgress)
+            }
         }
 
         Box(
             Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    translationY = offsetY
+                    translationY = (1f - progress.value) * screenHeight + dragOffset.value
                     alpha = 0.90f + 0.10f * progress.value
                     clip = true
                     shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)
