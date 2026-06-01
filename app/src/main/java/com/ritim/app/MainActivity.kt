@@ -92,6 +92,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -1930,6 +1931,9 @@ private fun PlayerCardPage(
             maxWidth - 56.dp,
             if (compactPlayerLayout) 254.dp else 304.dp
         )
+        val contentWidth = maxWidth - 56.dp
+        val progressSideInset = (contentWidth - coverSize) / 2f
+        val lyricsEdgeInset = progressSideInset + 12.dp
         val sideControlSize = if (compactPlayerLayout) 66.dp else 76.dp
         val mainControlSize = if (compactPlayerLayout) 92.dp else 104.dp
         val sideControlIconSize = if (compactPlayerLayout) 42.dp else 48.dp
@@ -1937,8 +1941,9 @@ private fun PlayerCardPage(
         val controlSpacer = if (compactPlayerLayout) 14.dp else 18.dp
         val coverLift = if (compactPlayerLayout) 6.dp else 10.dp
         val lyricsCoverScale = if (compactPlayerLayout) 0.21f else 0.19f
+        val lyricsCoverSize = coverSize * lyricsCoverScale
         val coverTranslationXPx = with(density) {
-            -((maxWidth - coverSize) / 2f).toPx() * lyricsProgress
+            12.dp.toPx() * lyricsProgress
         }
         SideEffect {
             onBackdropProgressChange(backdropProgress)
@@ -1970,6 +1975,65 @@ private fun PlayerCardPage(
                 Modifier
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.32f))
+            )
+
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.52f)
+                    .align(Alignment.TopCenter)
+                    .pointerInput(screenHeight) {
+                        detectDragGestures(
+                            onDragStart = {
+                                lastDownwardDrag = 0f
+                            },
+                            onDragEnd = {
+                                val shouldDismiss =
+                                    dragOffset.value > screenHeight * 0.12f || lastDownwardDrag > 18f
+                                if (shouldDismiss) {
+                                    scope.launch {
+                                        progress.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = tween(
+                                                durationMillis = 170,
+                                                easing = FastOutSlowInEasing
+                                            )
+                                        )
+                                        dragOffset.snapTo(0f)
+                                        onDismiss()
+                                    }
+                                } else {
+                                    scope.launch {
+                                        dragOffset.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = tween(
+                                                durationMillis = 140,
+                                                easing = FastOutSlowInEasing
+                                            )
+                                        )
+                                    }
+                                }
+                            },
+                            onDragCancel = {
+                                scope.launch {
+                                    dragOffset.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = tween(
+                                            durationMillis = 140,
+                                            easing = FastOutSlowInEasing
+                                        )
+                                    )
+                                }
+                            },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                lastDownwardDrag = dragAmount.y
+                                scope.launch {
+                                    dragOffset.snapTo(max(0f, dragOffset.value + dragAmount.y))
+                                }
+                            }
+                        )
+                    }
             )
 
             Column(
@@ -2016,19 +2080,23 @@ private fun PlayerCardPage(
                         onFavoriteToggle = onFavoriteToggle,
                         modifier = Modifier
                             .align(Alignment.TopStart)
-                            .padding(start = coverSize * lyricsCoverScale + 12.dp)
+                            .padding(
+                                start = lyricsEdgeInset + lyricsCoverSize + 12.dp,
+                                end = lyricsEdgeInset
+                            )
                             .fillMaxWidth()
-                            .height(coverSize * lyricsCoverScale)
+                            .height(lyricsCoverSize)
                             .graphicsLayer { alpha = lyricsProgress }
                     )
 
                     LyricsPanel(
                         lyrics = lyrics,
                         activeIndex = activeLyricIndex,
+                        edgePadding = lyricsEdgeInset,
                         modifier = Modifier
                             .align(Alignment.BottomStart)
                             .fillMaxWidth()
-                            .height(coverSize - coverSize * lyricsCoverScale - 18.dp)
+                            .height(coverSize - lyricsCoverSize + 2.dp)
                             .graphicsLayer { alpha = lyricsProgress }
                     )
                 }
@@ -2150,65 +2218,6 @@ private fun PlayerCardPage(
                 }
             }
 
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.52f)
-                    .align(Alignment.TopCenter)
-                    .pointerInput(screenHeight) {
-                        detectDragGestures(
-                            onDragStart = {
-                                lastDownwardDrag = 0f
-                            },
-                            onDragEnd = {
-                                val shouldDismiss =
-                                    dragOffset.value > screenHeight * 0.12f || lastDownwardDrag > 18f
-                                if (shouldDismiss) {
-                                    scope.launch {
-                                        progress.animateTo(
-                                            targetValue = 0f,
-                                            animationSpec = tween(
-                                                durationMillis = 170,
-                                                easing = FastOutSlowInEasing
-                                            )
-                                        )
-                                        dragOffset.snapTo(0f)
-                                        onDismiss()
-                                    }
-                                } else {
-                                    scope.launch {
-                                        dragOffset.animateTo(
-                                            targetValue = 0f,
-                                            animationSpec = tween(
-                                                durationMillis = 140,
-                                                easing = FastOutSlowInEasing
-                                            )
-                                        )
-                                    }
-                                }
-                            },
-                            onDragCancel = {
-                                scope.launch {
-                                    dragOffset.animateTo(
-                                        targetValue = 0f,
-                                        animationSpec = tween(
-                                            durationMillis = 140,
-                                            easing = FastOutSlowInEasing
-                                        )
-                                    )
-                                }
-                            },
-                            onDrag = { change, dragAmount ->
-                                change.consume()
-                                lastDownwardDrag = dragAmount.y
-                                scope.launch {
-                                    dragOffset.snapTo(max(0f, dragOffset.value + dragAmount.y))
-                                }
-                            }
-                        )
-                    }
-                )
-            }
         }
     }
 
@@ -2434,48 +2443,111 @@ private fun LyricsHeaderRow(
 private fun LyricsPanel(
     lyrics: List<LrcLine>,
     activeIndex: Int,
+    edgePadding: Dp,
     modifier: Modifier = Modifier
 ) {
-    val scrollState = rememberScrollState()
-
-    LaunchedEffect(lyrics.size, activeIndex) {
-        if (lyrics.isNotEmpty()) {
-            scrollState.animateScrollTo(
-                (activeIndex * 34).coerceIn(0, scrollState.maxValue)
-            )
-        }
-    }
-
-    Column(
-        modifier
-            .verticalScroll(scrollState)
-            .padding(top = 12.dp, bottom = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        if (lyrics.isEmpty()) {
-            BasicText(
-                "暂无歌词",
-                style = TextStyle(
-                    color = Color.White.copy(alpha = 0.42f),
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium
-                )
-            )
+    BoxWithConstraints(modifier.clipToBounds()) {
+        val scrollState = rememberScrollState()
+        val density = LocalDensity.current
+        val centerPadding = if (maxHeight > 42.dp) {
+            maxHeight / 2f - 18.dp
         } else {
-            lyrics.forEachIndexed { index, line ->
-                val active = index == activeIndex
-                BasicText(
-                    line.text,
-                    style = TextStyle(
-                        color = Color.White.copy(alpha = if (active) 0.92f else 0.44f),
-                        fontSize = if (active) 18.sp else 16.sp,
-                        lineHeight = 27.sp,
-                        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium
-                    )
+            0.dp
+        }
+        val lineStep = 40.dp
+
+        LaunchedEffect(lyrics.size, activeIndex, maxHeight, scrollState.maxValue) {
+            if (lyrics.isNotEmpty()) {
+                scrollState.animateScrollTo(
+                    with(density) {
+                        (lineStep * activeIndex.toFloat()).toPx().roundToInt()
+                    }.coerceIn(0, scrollState.maxValue)
                 )
             }
         }
+
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(horizontal = edgePadding)
+                .padding(top = centerPadding, bottom = centerPadding + 20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            if (lyrics.isEmpty()) {
+                BasicText(
+                    "暂无歌词",
+                    modifier = Modifier.fillMaxWidth(),
+                    style = TextStyle(
+                        color = Color.White.copy(alpha = 0.42f),
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Start
+                    )
+                )
+            } else {
+                lyrics.forEachIndexed { index, line ->
+                    val active = index == activeIndex
+                    val lineScale by animateFloatAsState(
+                        targetValue = if (active) 1.3f else 1f,
+                        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
+                    )
+                    BasicText(
+                        line.text,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .graphicsLayer {
+                                scaleX = lineScale
+                                scaleY = lineScale
+                            },
+                        style = TextStyle(
+                            color = Color.White.copy(alpha = if (active) 0.92f else 0.44f),
+                            fontSize = 16.sp,
+                            lineHeight = 28.sp,
+                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                            textAlign = if (active) TextAlign.Center else TextAlign.Start
+                        )
+                    )
+                }
+            }
+        }
+
+        LyricsEdgeFade(
+            top = true,
+            modifier = Modifier.align(Alignment.TopCenter)
+        )
+        LyricsEdgeFade(
+            top = false,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
+}
+
+@Composable
+private fun LyricsEdgeFade(
+    top: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val colors = if (top) {
+        listOf(
+            Color.Black.copy(alpha = 0.62f),
+            Color.Black.copy(alpha = 0.22f),
+            Color.Transparent
+        )
+    } else {
+        listOf(
+            Color.Transparent,
+            Color.Black.copy(alpha = 0.22f),
+            Color.Black.copy(alpha = 0.62f)
+        )
+    }
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(25.dp)
+            .blur(7.dp)
+            .background(Brush.verticalGradient(colors))
+    )
 }
 
 @Composable
