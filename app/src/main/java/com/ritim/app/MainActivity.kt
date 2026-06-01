@@ -2902,7 +2902,6 @@ private fun LyricsMarqueeLine(
                     role = Role.Button,
                     onClick = onClick
                 )
-                .padding(vertical = verticalPadding)
                 .then(
                     if (hiddenDistancePx > 1f) {
                         Modifier.lyricsHorizontalFade(
@@ -2913,6 +2912,7 @@ private fun LyricsMarqueeLine(
                         Modifier
                     }
                 )
+                .padding(vertical = verticalPadding)
         ) {
             BasicText(
                 text,
