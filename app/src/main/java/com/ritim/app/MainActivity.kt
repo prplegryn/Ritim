@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -292,7 +293,7 @@ private fun RitimBottomControls(
             .fillMaxWidth()
             .navigationBarsPadding()
             .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(11.dp)
     ) {
         MiniPlayerBar(
             backdrop = backdrop,
@@ -376,7 +377,7 @@ private fun MiniPlayerBar(
     ) {
         Box(
             Modifier
-                .size(36.dp)
+                .size(38.dp)
                 .shadow(4.dp, RoundedCornerShape(8.dp), clip = false)
                 .clip(RoundedCornerShape(8.dp))
                 .background(Color(0xFFD8E8FF))
@@ -390,6 +391,7 @@ private fun MiniPlayerBar(
         ) {
             BasicText(
                 "Ritim Draft",
+                modifier = Modifier.offset(y = 1.dp),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = TextStyle(
@@ -410,25 +412,31 @@ private fun MiniPlayerBar(
             )
         }
 
-        MiniIconButton(
-            contentDescription = if (playing) "暂停" else "播放",
-            onClick = { playing = !playing }
+        Row(
+            Modifier.offset(x = (-5).dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            PlayPauseGlyph(
-                playing = playing,
-                modifier = Modifier.size(20.dp),
-                color = Color(0xFF1E1E1E)
-            )
-        }
+            MiniIconButton(
+                contentDescription = if (playing) "暂停" else "播放",
+                onClick = { playing = !playing }
+            ) {
+                PlayPauseGlyph(
+                    playing = playing,
+                    modifier = Modifier.size(23.dp),
+                    color = Color(0xFF1E1E1E)
+                )
+            }
 
-        MiniIconButton(
-            contentDescription = "下一曲",
-            onClick = {}
-        ) {
-            NextGlyph(
-                modifier = Modifier.size(21.dp),
-                color = Color(0xFF1E1E1E)
-            )
+            MiniIconButton(
+                contentDescription = "下一曲",
+                onClick = {}
+            ) {
+                NextGlyph(
+                    modifier = Modifier.size(24.dp),
+                    color = Color(0xFF1E1E1E)
+                )
+            }
         }
     }
 }
@@ -448,7 +456,7 @@ private fun MiniIconButton(
 
     Box(
         Modifier
-            .size(34.dp)
+            .size(37.dp)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
