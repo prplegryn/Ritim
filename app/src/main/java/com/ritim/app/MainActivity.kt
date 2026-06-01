@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -3744,13 +3745,21 @@ private fun LyricsMarqueeLine(
         val viewportWidthPx = constraints.maxWidth.toFloat()
         val leftInsetPx = with(density) { 12.dp.toPx() }
         var lineWidthPx by remember(text) { mutableFloatStateOf(0f) }
+        var translationWidthPx by remember(translation) { mutableFloatStateOf(0f) }
         val activeScale = 1.34f
         val effectiveLineWidthPx = lineWidthPx * if (active) activeScale else 1f
         val hiddenDistancePx = (effectiveLineWidthPx + leftInsetPx - viewportWidthPx)
             .coerceAtLeast(0f)
+        val effectiveTranslationWidthPx = translationWidthPx * if (active) activeScale else 1f
+        val translationHiddenDistancePx = (effectiveTranslationWidthPx + leftInsetPx - viewportWidthPx)
+            .coerceAtLeast(0f)
         val marqueeOffset = remember(text) { Animatable(0f) }
+        val translationMarqueeOffset = remember(translation) { Animatable(0f) }
         val leftFadeProgress = with(density) {
             ((-marqueeOffset.value - 8.dp.toPx()) / 18.dp.toPx()).coerceIn(0f, 1f)
+        }
+        val translationLeftFadeProgress = with(density) {
+            ((-translationMarqueeOffset.value - 8.dp.toPx()) / 18.dp.toPx()).coerceIn(0f, 1f)
         }
         val lineScale by animateFloatAsState(
             targetValue = if (active) activeScale else 1f,
@@ -3760,7 +3769,9 @@ private fun LyricsMarqueeLine(
             targetValue = if (active) activeLineShiftPx else 0f,
             animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
         )
-        val verticalPadding = if (active && hiddenDistancePx > 1f) {
+        val lineNeedsFade = hiddenDistancePx > 1f
+        val translationNeedsFade = translationHiddenDistancePx > 1f
+        val verticalPadding = if (active && (lineNeedsFade || translationNeedsFade)) {
             30.dp
         } else if (active) {
             18.dp
@@ -3794,6 +3805,32 @@ private fun LyricsMarqueeLine(
             }
         }
 
+        LaunchedEffect(scrolling, translation, translationHiddenDistancePx, durationMs) {
+            if (translation.isNotBlank() && scrolling && translationHiddenDistancePx > 1f) {
+                val edgeReserve = with(density) { 10.dp.toPx() }
+                val targetOffset = -(translationHiddenDistancePx + edgeReserve)
+                val elapsedProgress = elapsedMs.toFloat() / durationMs.toFloat()
+                val startingOffset = targetOffset * elapsedProgress.coerceIn(0f, 0.82f)
+                translationMarqueeOffset.snapTo(startingOffset)
+                val remainingDuration = (durationMs - elapsedMs)
+                    .coerceAtLeast(900L)
+                    .coerceAtMost(12_000L)
+                delay(180)
+                translationMarqueeOffset.animateTo(
+                    targetValue = targetOffset,
+                    animationSpec = tween(
+                        durationMillis = (remainingDuration - 180L).coerceAtLeast(720L).toInt(),
+                        easing = FastOutSlowInEasing
+                    )
+                )
+            } else {
+                translationMarqueeOffset.animateTo(
+                    targetValue = 0f,
+                    animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)
+                )
+            }
+        }
+
         Box(
             Modifier
                 .fillMaxWidth()
@@ -3803,55 +3840,93 @@ private fun LyricsMarqueeLine(
                     role = Role.Button,
                     onClick = onClick
                 )
-                .then(
-                    if (hiddenDistancePx > 1f) {
-                        Modifier.lyricsHorizontalFade(
-                            edgeWidth = 28.dp,
-                            leftFadeProgress = leftFadeProgress
-                        )
-                    } else {
-                        Modifier
-                    }
-                )
                 .padding(vertical = verticalPadding)
         ) {
             Column {
-                BasicText(
-                    text,
-                    modifier = Modifier.graphicsLayer {
-                        translationX = leftInsetPx + marqueeOffset.value + lineShift
-                        scaleX = lineScale
-                        scaleY = lineScale
-                        transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
-                    },
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Visible,
-                    onTextLayout = { result ->
-                        lineWidthPx = if (result.lineCount > 0) result.getLineRight(0) else 0f
-                    },
-                    style = TextStyle(
-                        color = Color.White.copy(alpha = if (active) 0.92f else 0.44f),
-                        fontSize = 16.sp,
-                        lineHeight = 34.sp,
-                        fontFamily = FontFamily.SansSerif,
-                        fontWeight = FontWeight.Bold
-                    )
-                )
-                if (translation.isNotBlank()) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .then(if (active && lineNeedsFade) Modifier.heightIn(min = 48.dp) else Modifier)
+                        .then(
+                            if (lineNeedsFade) {
+                                Modifier.lyricsHorizontalFade(
+                                    edgeWidth = 28.dp,
+                                    leftFadeProgress = leftFadeProgress
+                                )
+                            } else {
+                                Modifier
+                            }
+                        )
+                ) {
                     BasicText(
-                        translation,
-                        modifier = Modifier.padding(start = 12.dp, top = 2.dp),
+                        text,
+                        modifier = Modifier.graphicsLayer {
+                            translationX = leftInsetPx + marqueeOffset.value + lineShift
+                            scaleX = lineScale
+                            scaleY = lineScale
+                            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
+                        },
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                        softWrap = false,
+                        overflow = TextOverflow.Visible,
+                        onTextLayout = { result ->
+                            lineWidthPx = if (result.lineCount > 0) result.getLineRight(0) else 0f
+                        },
                         style = TextStyle(
-                            color = Color.White.copy(alpha = if (active) 0.72f else 0.44f),
-                            fontSize = 12.sp,
-                            lineHeight = 18.sp,
+                            color = Color.White.copy(alpha = if (active) 0.92f else 0.44f),
+                            fontSize = 16.sp,
+                            lineHeight = 34.sp,
                             fontFamily = FontFamily.SansSerif,
                             fontWeight = FontWeight.Bold
                         )
                     )
+                }
+                if (translation.isNotBlank()) {
+                    Spacer(Modifier.height(5.dp))
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .then(
+                                if (active && translationNeedsFade) {
+                                    Modifier.heightIn(min = 30.dp)
+                                } else {
+                                    Modifier
+                                }
+                            )
+                            .then(
+                                if (translationNeedsFade) {
+                                    Modifier.lyricsHorizontalFade(
+                                        edgeWidth = 28.dp,
+                                        leftFadeProgress = translationLeftFadeProgress
+                                    )
+                                } else {
+                                    Modifier
+                                }
+                            )
+                    ) {
+                        BasicText(
+                            translation,
+                            modifier = Modifier.graphicsLayer {
+                                translationX = leftInsetPx + translationMarqueeOffset.value + lineShift
+                                scaleX = lineScale
+                                scaleY = lineScale
+                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
+                            },
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Visible,
+                            onTextLayout = { result ->
+                                translationWidthPx = if (result.lineCount > 0) result.getLineRight(0) else 0f
+                            },
+                            style = TextStyle(
+                                color = Color.White.copy(alpha = if (active) 0.72f else 0.44f),
+                                fontSize = 12.sp,
+                                lineHeight = 18.sp,
+                                fontFamily = FontFamily.SansSerif,
+                                fontWeight = FontWeight.Bold
+                            )
+                        )
+                    }
                 }
             }
         }
