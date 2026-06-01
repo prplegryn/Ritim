@@ -2704,7 +2704,6 @@ private fun LyricsPanel(
         val activeLineShiftPx = with(density) { -3.dp.toPx() }
         var userScrollSuspended by remember { mutableStateOf(false) }
         var userScrollRequest by remember { mutableIntStateOf(0) }
-        var seekScrollTargetIndex by remember { mutableIntStateOf(-1) }
         val lineHeights = remember(lyrics) {
             mutableStateListOf<Int>().apply {
                 repeat(lyrics.size) { add(0) }
@@ -2715,7 +2714,6 @@ private fun LyricsPanel(
             object : NestedScrollConnection {
                 override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                     if (source == NestedScrollSource.UserInput && available.y != 0f) {
-                        seekScrollTargetIndex = -1
                         userScrollSuspended = true
                         userScrollRequest += 1
                     }
@@ -2745,24 +2743,10 @@ private fun LyricsPanel(
             scrollState.maxValue,
             viewportHeightPx,
             lineHeightsTotal,
-            userScrollSuspended,
-            seekScrollTargetIndex
+            userScrollSuspended
         ) {
-            if (lyrics.isNotEmpty()) {
-                val targetIndex = seekScrollTargetIndex.takeIf { it >= 0 }
-                when {
-                    targetIndex != null -> {
-                        scrollState.animateScrollTo(scrollTargetForIndex(targetIndex))
-                        val activeTimeMs = lyrics.getOrNull(activeIndex)?.timeMs
-                        val targetTimeMs = lyrics.getOrNull(targetIndex)?.timeMs
-                        if (activeIndex == targetIndex || activeTimeMs == targetTimeMs) {
-                            seekScrollTargetIndex = -1
-                        }
-                    }
-                    !userScrollSuspended -> {
-                        scrollState.animateScrollTo(scrollTargetForIndex(activeIndex))
-                    }
-                }
+            if (lyrics.isNotEmpty() && !userScrollSuspended) {
+                scrollState.animateScrollTo(scrollTargetForIndex(activeIndex))
             }
         }
 
@@ -2770,9 +2754,7 @@ private fun LyricsPanel(
             if (userScrollRequest > 0 && playing) {
                 delay(3_000)
                 userScrollSuspended = false
-                if (seekScrollTargetIndex < 0) {
-                    scrollState.animateScrollTo(scrollTargetForIndex(activeIndex))
-                }
+                scrollState.animateScrollTo(scrollTargetForIndex(activeIndex))
             }
         }
 
@@ -2823,8 +2805,8 @@ private fun LyricsPanel(
                                     songDurationMs.takeIf { it > 0L }
                                         ?: ((lyrics.lastOrNull()?.timeMs ?: line.timeMs) + 1_000L)
                                 )
-                                seekScrollTargetIndex = index
-                                userScrollSuspended = false
+                                userScrollSuspended = true
+                                userScrollRequest += 1
                                 onLyricSeek((line.timeMs.toFloat() / seekDurationMs.toFloat()).coerceIn(0f, 1f))
                             },
                             onHeightMeasured = { height ->
@@ -2857,7 +2839,6 @@ private fun LyricsMarqueeLine(
         modifier
             .fillMaxWidth()
             .onSizeChanged { size -> onHeightMeasured(size.height) }
-            .clipToBounds()
     ) {
         val viewportWidthPx = constraints.maxWidth.toFloat()
         val leftInsetPx = with(density) { 12.dp.toPx() }
@@ -2879,9 +2860,9 @@ private fun LyricsMarqueeLine(
             animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
         )
         val verticalPadding = if (active && hiddenDistancePx > 1f) {
-            22.dp
+            30.dp
         } else if (active) {
-            14.dp
+            18.dp
         } else {
             6.dp
         }
@@ -2951,7 +2932,7 @@ private fun LyricsMarqueeLine(
                 style = TextStyle(
                     color = Color.White.copy(alpha = if (active) 0.92f else 0.44f),
                     fontSize = 16.sp,
-                    lineHeight = 28.sp,
+                    lineHeight = 34.sp,
                     fontFamily = FontFamily.SansSerif,
                     fontWeight = FontWeight.Bold
                 )
