@@ -130,7 +130,7 @@ private class PlaybackRuntimeTracker {
 private const val previousRestartThresholdMs = 3_000L
 private const val metadataKeySampleRate = 38
 private const val metadataKeyBitsPerSample = 39
-private val michromaFontFamily = FontFamily(Font(R.font.michroma_regular))
+private val rajdhaniSemiBoldFontFamily = FontFamily(Font(R.font.rajdhani_semibold))
 
 @Composable
 fun RitimApp() {
@@ -2229,9 +2229,9 @@ private fun PlayerQualityText(
         maxLines = 1,
         style = TextStyle(
             color = Color.White.copy(alpha = 0.56f),
-            fontSize = 11.sp,
-            fontFamily = michromaFontFamily,
-            fontWeight = FontWeight.Normal
+            fontSize = 10.sp,
+            fontFamily = rajdhaniSemiBoldFontFamily,
+            fontWeight = FontWeight.SemiBold
         )
     )
 }
