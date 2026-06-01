@@ -1852,20 +1852,25 @@ private fun PlayerCardPage(
                     verticalArrangement = Arrangement.SpaceBetween,
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    PlayerSongInfoRow(
-                        song = song,
-                        favorite = favorite,
-                        onFavoriteToggle = onFavoriteToggle,
-                        modifier = Modifier.width(coverSize)
-                    )
+                    Column(
+                        modifier = Modifier.width(coverSize),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        PlayerSongInfoRow(
+                            song = song,
+                            favorite = favorite,
+                            onFavoriteToggle = onFavoriteToggle,
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
-                    PlayerTimeline(
-                        progress = playbackProgress,
-                        durationMs = song.durationMs,
-                        qualityLabel = song.audioQualityLabel,
-                        onSeek = onSeek,
-                        modifier = Modifier.width(coverSize)
-                    )
+                        PlayerTimeline(
+                            progress = playbackProgress,
+                            durationMs = song.durationMs,
+                            qualityLabel = song.audioQualityLabel,
+                            onSeek = onSeek,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -2090,15 +2095,15 @@ private fun PlayerSongInfoRow(
     modifier: Modifier = Modifier
 ) {
     Row(
-        modifier.height(46.dp),
+        modifier.height(42.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.Bottom
     ) {
         Column(
             Modifier
                 .weight(1f)
-                .height(40.dp),
-            verticalArrangement = Arrangement.Center
+                .height(38.dp),
+            verticalArrangement = Arrangement.Bottom
         ) {
             BasicText(
                 song.title,
