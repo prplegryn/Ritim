@@ -2220,6 +2220,7 @@ private fun PlayerCardPage(
 
         }
     }
+}
 
 @Composable
 private fun MiniCoverArt(
