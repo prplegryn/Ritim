@@ -112,8 +112,15 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -123,8 +130,6 @@ import java.net.URL
 import java.nio.charset.Charset
 import kotlin.math.max
 import kotlin.math.roundToInt
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
 class MainActivity : ComponentActivity() {
@@ -238,6 +243,9 @@ fun RitimApp() {
     var playerLyricsVisible by rememberSaveable { mutableStateOf(false) }
     var playerDismissRequestId by remember { mutableIntStateOf(0) }
     var playerBackdropProgress by remember { mutableFloatStateOf(0f) }
+    var rememberedTranslationSongIds by remember {
+        mutableStateOf(emptySet<Long>())
+    }
     var aiLyricsSettings by remember(context) {
         mutableStateOf(loadAiLyricsTranslationSettings(context))
     }
@@ -344,6 +352,8 @@ fun RitimApp() {
                 favorite = favoriteSongIds.contains(currentSong.id),
                 lyricsVisible = playerLyricsVisible,
                 aiLyricsSettings = aiLyricsSettings,
+                rememberedTranslationSongIds = rememberedTranslationSongIds,
+                onRememberedTranslationSongIdsChange = { rememberedTranslationSongIds = it },
                 dismissRequestId = playerDismissRequestId,
                 onPlayingChange = { playing = it },
                 onSeek = requestSeek,
@@ -1336,6 +1346,27 @@ private data class AiLyricsTranslationSettings(
     val modelName: String = ""
 )
 
+private enum class LyricsTranslationStatus {
+    Idle,
+    Loading,
+    Ready,
+    NotNeeded,
+    Failed
+}
+
+private data class LyricsTranslationResult(
+    val status: LyricsTranslationStatus = LyricsTranslationStatus.Idle,
+    val lines: List<LrcLine> = emptyList()
+)
+
+private data class LyricsTranslationUiState(
+    val status: LyricsTranslationStatus = LyricsTranslationStatus.Idle,
+    val lines: Map<Long, String> = emptyMap()
+) {
+    val loading: Boolean
+        get() = status == LyricsTranslationStatus.Loading
+}
+
 private val coverImageCache = mutableMapOf<Long, ImageBitmap?>()
 private val albumArtBaseUri: Uri = Uri.parse("content://media/external/audio/albumart")
 
@@ -1615,10 +1646,10 @@ private fun rememberTranslatedSongLyrics(
     song: SongSample,
     enabled: Boolean,
     settings: AiLyricsTranslationSettings
-): Map<Long, String> {
+): LyricsTranslationUiState {
     val context = LocalContext.current
-    var lyrics by remember(song.id, settings.targetLanguage, settings.apiBaseUrl, settings.modelName) {
-        mutableStateOf(emptyMap<Long, String>())
+    var translationState by remember(song.id, settings.targetLanguage, settings.apiBaseUrl, settings.modelName) {
+        mutableStateOf(LyricsTranslationUiState())
     }
 
     LaunchedEffect(
@@ -1630,53 +1661,109 @@ private fun rememberTranslatedSongLyrics(
         enabled,
         settings
     ) {
-        lyrics = if (enabled) {
-            loadOrCreateTranslatedLyrics(context, song, settings)
-                .associate { it.timeMs to it.text }
+        translationState = if (enabled) {
+            LyricsTranslationUiState(status = LyricsTranslationStatus.Loading)
+            val result = LyricsTranslationJobs
+                .request(context.applicationContext, song, settings)
+                .await()
+            LyricsTranslationUiState(
+                status = result.status,
+                lines = result.lines.associate { it.timeMs to it.text }
+            )
         } else {
-            emptyMap()
+            LyricsTranslationUiState()
         }
     }
 
-    return lyrics
+    return translationState
+}
+
+private object LyricsTranslationJobs {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val lock = Any()
+    private val jobs = mutableMapOf<String, Deferred<LyricsTranslationResult>>()
+
+    fun request(
+        context: Context,
+        song: SongSample,
+        settings: AiLyricsTranslationSettings
+    ): Deferred<LyricsTranslationResult> {
+        val key = translationJobKey(context, song, settings)
+        return synchronized(lock) {
+            jobs[key]?.let { return@synchronized it }
+            val job = scope.async {
+                loadOrCreateTranslatedLyrics(context, song, settings).also {
+                    synchronized(lock) {
+                        jobs.remove(key)
+                    }
+                }
+            }
+            jobs[key] = job
+            job
+        }
+    }
+}
+
+private fun translationJobKey(
+    context: Context,
+    song: SongSample,
+    settings: AiLyricsTranslationSettings
+): String {
+    val sourceFile = findLyricsFile(context, song)
+    return listOf(
+        sourceFile?.absolutePath ?: song.id.toString(),
+        settings.targetLanguage,
+        settings.apiBaseUrl,
+        settings.modelName
+    ).joinToString("|")
 }
 
 private suspend fun loadOrCreateTranslatedLyrics(
     context: Context,
     song: SongSample,
     settings: AiLyricsTranslationSettings
-): List<LrcLine> =
+): LyricsTranslationResult =
     withContext(Dispatchers.IO) {
-        val sourceFile = findLyricsFile(context, song) ?: return@withContext emptyList()
+        val sourceFile = findLyricsFile(context, song)
+            ?: return@withContext LyricsTranslationResult(LyricsTranslationStatus.Failed)
         val cachedFile = translatedLyricsFile(sourceFile, settings.targetLanguage)
         if (cachedFile.exists()) {
-            return@withContext parseLrcText(readLyricsText(cachedFile))
+            return@withContext LyricsTranslationResult(
+                status = LyricsTranslationStatus.Ready,
+                lines = parseLrcText(readLyricsText(cachedFile))
+            )
         }
         val sourceLyrics = parseLrcText(readLyricsText(sourceFile))
-        if (sourceLyrics.isEmpty()) return@withContext emptyList()
+        if (sourceLyrics.isEmpty()) {
+            return@withContext LyricsTranslationResult(LyricsTranslationStatus.Failed)
+        }
         val apiReady = settings.apiBaseUrl.isNotBlank() &&
             settings.apiKey.isNotBlank() &&
             settings.modelName.isNotBlank()
-        if (!apiReady) return@withContext emptyList()
+        if (!apiReady) {
+            return@withContext LyricsTranslationResult(LyricsTranslationStatus.Failed)
+        }
 
-        val translatedLines = runCatching {
+        val sourceLanguage = runCatching {
             val folder = File(sourceFile.parentFile, "translatedLyrics")
             folder.mkdirs()
             sourceFile.copyTo(File(folder, sourceFile.name), overwrite = true)
-            val sourceLanguage = detectLyricsLanguage(song, sourceLyrics, settings)
-            if (sameLanguage(sourceLanguage, settings.targetLanguage)) {
-                emptyList()
-            } else {
-                val songContext = evaluateSongContext(song, sourceLyrics, sourceLanguage, settings)
-                translateLyricLines(
-                    song = song,
-                    lyrics = sourceLyrics,
-                    sourceLanguage = sourceLanguage,
-                    songContext = songContext,
-                    settings = settings
-                )
-            }
-        }.getOrDefault(emptyList())
+            detectLyricsLanguage(song, sourceLyrics, settings)
+        }.getOrNull().orEmpty()
+        if (sameLanguage(sourceLanguage, settings.targetLanguage)) {
+            return@withContext LyricsTranslationResult(LyricsTranslationStatus.NotNeeded)
+        }
+
+        val translatedLines = runCatching {
+            val songContext = evaluateSongContext(song, sourceLyrics, sourceLanguage, settings)
+            translateLyricLines(
+                song = song,
+                lyrics = sourceLyrics,
+                sourceLanguage = sourceLanguage,
+                songContext = songContext,
+                settings = settings
+            )
+        }.getOrNull() ?: return@withContext LyricsTranslationResult(LyricsTranslationStatus.Failed)
 
         if (translatedLines.isNotEmpty()) {
             runCatching {
@@ -1684,7 +1771,14 @@ private suspend fun loadOrCreateTranslatedLyrics(
                 cachedFile.writeText(buildLrcText(translatedLines))
             }
         }
-        translatedLines
+        LyricsTranslationResult(
+            status = if (translatedLines.isEmpty()) {
+                LyricsTranslationStatus.Failed
+            } else {
+                LyricsTranslationStatus.Ready
+            },
+            lines = translatedLines
+        )
     }
 
 private suspend fun detectLyricsLanguage(
@@ -1722,10 +1816,10 @@ private suspend fun translateLyricLines(
     settings: AiLyricsTranslationSettings
 ): List<LrcLine> =
     coroutineScope {
-        val translated = mutableListOf<LrcLine>()
-        lyrics.chunked(6).forEach { chunk ->
-            translated += chunk.map { line ->
-                async(Dispatchers.IO) {
+        val semaphore = Semaphore(6)
+        lyrics.map { line ->
+            async(Dispatchers.IO) {
+                semaphore.withPermit {
                     val translatedText = requestAiText(
                         settings = settings,
                         systemPrompt = "你是歌词单句翻译器。只返回这一句的${settings.targetLanguage}译文，不要解释，不要引号，不要编号，不要<think>内容。保持歌曲语境、口吻和押韵感，不要生硬直译。",
@@ -1733,9 +1827,8 @@ private suspend fun translateLyricLines(
                     ).lineSequence().firstOrNull().orEmpty().trim()
                     line.copy(text = translatedText.ifBlank { line.text })
                 }
-            }.awaitAll()
-        }
-        translated
+            }
+        }.awaitAll()
     }
 
 private fun translatedLyricsFile(sourceFile: File, targetLanguage: String): File {
@@ -1745,6 +1838,16 @@ private fun translatedLyricsFile(sourceFile: File, targetLanguage: String): File
         .replace(Regex("""[\\/:*?"<>|]"""), "_")
     return File(folder, "$baseName.$languageName.lrc")
 }
+
+private suspend fun hasCachedTranslatedLyrics(
+    context: Context,
+    song: SongSample,
+    targetLanguage: String
+): Boolean =
+    withContext(Dispatchers.IO) {
+        val sourceFile = findLyricsFile(context, song) ?: return@withContext false
+        translatedLyricsFile(sourceFile, targetLanguage).exists()
+    }
 
 private fun buildLrcText(lines: List<LrcLine>): String =
     lines.joinToString(separator = "\n") { line ->
@@ -2619,6 +2722,8 @@ private fun PlayerCardPage(
     favorite: Boolean,
     lyricsVisible: Boolean,
     aiLyricsSettings: AiLyricsTranslationSettings,
+    rememberedTranslationSongIds: Set<Long>,
+    onRememberedTranslationSongIdsChange: (Set<Long>) -> Unit,
     dismissRequestId: Int,
     onPlayingChange: (Boolean) -> Unit,
     onSeek: (Float) -> Unit,
@@ -2631,18 +2736,37 @@ private fun PlayerCardPage(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val progress = remember { Animatable(0f) }
     val dragOffset = remember { Animatable(0f) }
     var lastDownwardDrag by remember { mutableFloatStateOf(0f) }
-    var translationActive by rememberSaveable { mutableStateOf(false) }
+    var translationActiveSongId by rememberSaveable { mutableStateOf<Long?>(null) }
+    val translationActive = translationActiveSongId == song.id
     val lyricsState = rememberSongLyricsState(song)
     val lyrics = lyricsState.lines
-    val translatedLyrics = rememberTranslatedSongLyrics(
+    val translationState = rememberTranslatedSongLyrics(
         song = song,
         enabled = translationActive,
         settings = aiLyricsSettings
     )
+    val translatedLyrics = translationState.lines
+    LaunchedEffect(song.id, aiLyricsSettings.targetLanguage) {
+        val shouldRestore = rememberedTranslationSongIds.contains(song.id) &&
+            hasCachedTranslatedLyrics(context, song, aiLyricsSettings.targetLanguage)
+        translationActiveSongId = if (shouldRestore) song.id else null
+    }
+    LaunchedEffect(song.id, translationState.status) {
+        if (
+            translationState.status == LyricsTranslationStatus.NotNeeded ||
+            translationState.status == LyricsTranslationStatus.Failed
+        ) {
+            if (translationActiveSongId == song.id) {
+                translationActiveSongId = null
+            }
+            onRememberedTranslationSongIdsChange(rememberedTranslationSongIds - song.id)
+        }
+    }
     val lyricsProgress by animateFloatAsState(
         targetValue = if (lyricsVisible) 1f else 0f,
         animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing)
@@ -3027,7 +3151,16 @@ private fun PlayerCardPage(
             if (lyricsProgress > 0.01f) {
                 TranslationPillButton(
                     selected = translationActive,
-                    onClick = { translationActive = !translationActive },
+                    loading = translationState.loading,
+                    onClick = {
+                        if (translationActive) {
+                            translationActiveSongId = null
+                            onRememberedTranslationSongIdsChange(rememberedTranslationSongIds - song.id)
+                        } else {
+                            translationActiveSongId = song.id
+                            onRememberedTranslationSongIdsChange(rememberedTranslationSongIds + song.id)
+                        }
+                    },
                     modifier = Modifier
                         .statusBarsPadding()
                         .padding(start = 28.dp + lyricsEdgeInset)
@@ -3192,15 +3325,38 @@ private fun PlayerSongInfoRow(
 @Composable
 private fun TranslationPillButton(
     selected: Boolean,
+    loading: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
+    val pulse = remember { Animatable(0f) }
+    LaunchedEffect(loading) {
+        if (loading) {
+            while (true) {
+                pulse.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(durationMillis = 760, easing = FastOutSlowInEasing)
+                )
+                pulse.animateTo(
+                    targetValue = 0f,
+                    animationSpec = tween(durationMillis = 860, easing = FastOutSlowInEasing)
+                )
+            }
+        } else {
+            pulse.snapTo(0f)
+        }
+    }
     val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.96f else 1f,
+        targetValue = if (pressed && !loading) 0.96f else 1f,
         animationSpec = tween(durationMillis = 120)
     )
+    val backgroundColor = when {
+        loading -> Color.White.copy(alpha = 0.16f + 0.20f * pulse.value)
+        selected -> Color.White
+        else -> Color.White.copy(alpha = 0.13f)
+    }
     Box(
         modifier
             .size(38.dp)
@@ -3209,17 +3365,12 @@ private fun TranslationPillButton(
                 scaleY = scale
             }
             .clip(RoundedCornerShape(999.dp))
-            .background(
-                if (selected) {
-                    Color.White
-                } else {
-                    Color.White.copy(alpha = 0.13f)
-                }
-            )
+            .background(backgroundColor)
             .semantics { contentDescription = "翻译" }
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
+                enabled = !loading,
                 role = Role.Button,
                 onClick = onClick
             ),
@@ -3396,7 +3547,6 @@ private fun LyricsPanel(
                 repeat(lyrics.size) { add(0) }
             }
         }
-        val lineHeightsTotal = lineHeights.sum()
         val manualScrollConnection = remember {
             object : NestedScrollConnection {
                 override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
@@ -3429,7 +3579,6 @@ private fun LyricsPanel(
             activeIndex,
             scrollState.maxValue,
             viewportHeightPx,
-            lineHeightsTotal,
             userScrollSuspended
         ) {
             if (lyrics.isNotEmpty() && !userScrollSuspended) {
@@ -3645,6 +3794,7 @@ private fun LyricsMarqueeLine(
                         modifier = Modifier
                             .height(17.dp * translationProgress)
                             .clipToBounds()
+                            .lyricsTranslationRevealFade()
                             .graphicsLayer {
                                 alpha = translationProgress * if (active) 0.72f else 0.46f
                                 translationY = (1f - translationProgress) * -4.dp.toPx()
@@ -3715,6 +3865,27 @@ private fun Modifier.lyricsHorizontalFade(
                         edgeStop to Color.Black,
                         (1f - edgeStop) to Color.Black,
                         1f to Color.Transparent
+                    )
+                ),
+                blendMode = BlendMode.DstIn
+            )
+        }
+    }
+
+private fun Modifier.lyricsTranslationRevealFade(): Modifier =
+    graphicsLayer {
+        compositingStrategy = CompositingStrategy.Offscreen
+    }.drawWithContent {
+        drawContent()
+        val edgePx = 8.dp.toPx().coerceAtMost(size.height)
+        if (edgePx > 0f && size.height > 0f) {
+            val edgeStop = edgePx / size.height
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0f to Color.Transparent,
+                        edgeStop to Color.Black,
+                        1f to Color.Black
                     )
                 ),
                 blendMode = BlendMode.DstIn
