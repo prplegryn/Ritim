@@ -128,6 +128,7 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.Charset
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlinx.coroutines.coroutineScope
@@ -2751,16 +2752,22 @@ private fun PlayerCardPage(
         settings = aiLyricsSettings
     )
     val translatedLyrics = translationState.lines
+    val translationButtonEnabled = lyricsState.loaded &&
+        lyrics.isNotEmpty() &&
+        !translationState.loading
     LaunchedEffect(song.id, aiLyricsSettings.targetLanguage) {
         val shouldRestore = rememberedTranslationSongIds.contains(song.id) &&
             hasCachedTranslatedLyrics(context, song, aiLyricsSettings.targetLanguage)
-        translationActiveSongId = if (shouldRestore) song.id else null
+        if (translationActiveSongId != song.id) {
+            translationActiveSongId = if (shouldRestore) song.id else null
+        }
     }
     LaunchedEffect(song.id, translationState.status) {
         if (
             translationState.status == LyricsTranslationStatus.NotNeeded ||
             translationState.status == LyricsTranslationStatus.Failed
         ) {
+            delay(if (translationState.status == LyricsTranslationStatus.NotNeeded) 420 else 700)
             if (translationActiveSongId == song.id) {
                 translationActiveSongId = null
             }
@@ -3152,6 +3159,8 @@ private fun PlayerCardPage(
                 TranslationPillButton(
                     selected = translationActive,
                     loading = translationState.loading,
+                    enabled = translationButtonEnabled,
+                    status = translationState.status,
                     onClick = {
                         if (translationActive) {
                             translationActiveSongId = null
@@ -3326,6 +3335,8 @@ private fun PlayerSongInfoRow(
 private fun TranslationPillButton(
     selected: Boolean,
     loading: Boolean,
+    enabled: Boolean,
+    status: LyricsTranslationStatus,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -3349,11 +3360,17 @@ private fun TranslationPillButton(
         }
     }
     val scale by animateFloatAsState(
-        targetValue = if (pressed && !loading) 0.96f else 1f,
+        targetValue = if (pressed && enabled && !loading) 0.96f else 1f,
         animationSpec = tween(durationMillis = 120)
+    )
+    val enabledAlpha by animateFloatAsState(
+        targetValue = if (enabled || loading || selected) 1f else 0.42f,
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
     )
     val backgroundColor = when {
         loading -> Color.White.copy(alpha = 0.16f + 0.20f * pulse.value)
+        status == LyricsTranslationStatus.Failed -> Color(0xFFFFE1E1).copy(alpha = 0.26f)
+        status == LyricsTranslationStatus.NotNeeded -> Color.White.copy(alpha = 0.20f)
         selected -> Color.White
         else -> Color.White.copy(alpha = 0.13f)
     }
@@ -3363,6 +3380,7 @@ private fun TranslationPillButton(
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
+                alpha = enabledAlpha
             }
             .clip(RoundedCornerShape(999.dp))
             .background(backgroundColor)
@@ -3370,7 +3388,7 @@ private fun TranslationPillButton(
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
-                enabled = !loading,
+                enabled = enabled && !loading,
                 role = Role.Button,
                 onClick = onClick
             ),
@@ -3378,7 +3396,7 @@ private fun TranslationPillButton(
     ) {
         TranslationGlyph(
             modifier = Modifier.size(20.dp),
-            color = if (selected) Color(0xFF111315) else Color.White.copy(alpha = 0.86f)
+            color = if (selected && !loading) Color(0xFF111315) else Color.White.copy(alpha = 0.86f)
         )
     }
 }
@@ -3642,6 +3660,7 @@ private fun LyricsPanel(
                             elapsedMs = (currentPositionMs - line.timeMs).coerceAtLeast(0L),
                             translation = translatedLyrics[line.timeMs].orEmpty(),
                             translationVisible = translationsVisible,
+                            translationRevealDelayMillis = minOf(abs(index - activeIndex) * 22, 260),
                             activeLineShiftPx = activeLineShiftPx,
                             onClick = {
                                 val seekDurationMs = max(
@@ -3675,6 +3694,7 @@ private fun LyricsMarqueeLine(
     elapsedMs: Long,
     translation: String,
     translationVisible: Boolean,
+    translationRevealDelayMillis: Int,
     activeLineShiftPx: Float,
     onClick: () -> Unit,
     onHeightMeasured: (Int) -> Unit,
@@ -3705,10 +3725,21 @@ private fun LyricsMarqueeLine(
             targetValue = if (active) activeLineShiftPx else 0f,
             animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
         )
-        val translationProgress by animateFloatAsState(
-            targetValue = if (translationVisible && translation.isNotBlank()) 1f else 0f,
-            animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
-        )
+        val translationProgress = remember(text, translation) { Animatable(0f) }
+        LaunchedEffect(translationVisible, translation, translationRevealDelayMillis) {
+            if (translationVisible && translation.isNotBlank()) {
+                delay(translationRevealDelayMillis.toLong())
+                translationProgress.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(durationMillis = 210, easing = FastOutSlowInEasing)
+                )
+            } else {
+                translationProgress.animateTo(
+                    targetValue = 0f,
+                    animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing)
+                )
+            }
+        }
         val verticalPadding = if (active && hiddenDistancePx > 1f) {
             30.dp
         } else if (active) {
@@ -3764,17 +3795,15 @@ private fun LyricsMarqueeLine(
                 )
                 .padding(vertical = verticalPadding)
         ) {
-            Column(
-                modifier = Modifier
-                    .graphicsLayer {
+            Column {
+                BasicText(
+                    text,
+                    modifier = Modifier.graphicsLayer {
                         translationX = leftInsetPx + marqueeOffset.value + lineShift
                         scaleX = lineScale
                         scaleY = lineScale
                         transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
-                    }
-            ) {
-                BasicText(
-                    text,
+                    },
                     maxLines = 1,
                     softWrap = false,
                     overflow = TextOverflow.Visible,
@@ -3792,14 +3821,15 @@ private fun LyricsMarqueeLine(
                 if (translation.isNotBlank()) {
                     Box(
                         modifier = Modifier
-                            .height(17.dp * translationProgress)
+                            .padding(start = 12.dp)
+                            .height(17.dp * translationProgress.value)
                             .clipToBounds()
                             .lyricsTranslationRevealFade()
                             .graphicsLayer {
-                                alpha = translationProgress * if (active) 0.72f else 0.46f
-                                translationY = (1f - translationProgress) * -4.dp.toPx()
+                                alpha = translationProgress.value * if (active) 0.72f else 0.46f
+                                translationY = (1f - translationProgress.value) * -4.dp.toPx()
                             }
-                            .padding(top = 2.dp * translationProgress)
+                            .padding(top = 2.dp * translationProgress.value)
                     ) {
                         BasicText(
                             translation,
