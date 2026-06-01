@@ -104,7 +104,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
@@ -2199,9 +2198,6 @@ private fun PlayerCardPage(
                             playing = playing,
                             edgePadding = lyricsPanelEdgeInset,
                             onLyricSeek = onSeek,
-                            onDismissDragStart = { startDismissDrag() },
-                            onDismissDragDelta = { applyDismissDrag(it) },
-                            onDismissDragEnd = { settleDismissDrag() },
                             modifier = Modifier
                                 .align(Alignment.BottomStart)
                                 .fillMaxWidth()
@@ -2696,14 +2692,10 @@ private fun LyricsPanel(
     playing: Boolean,
     edgePadding: Dp,
     onLyricSeek: (Float) -> Unit,
-    onDismissDragStart: () -> Unit = {},
-    onDismissDragDelta: (Float) -> Unit = {},
-    onDismissDragEnd: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     BoxWithConstraints(modifier.clipToBounds()) {
         val scrollState = rememberScrollState()
-        val scope = rememberCoroutineScope()
         val density = LocalDensity.current
         val viewportHeightPx = constraints.maxHeight
         val activeAnchorFromTop = maxHeight * 0.35f
@@ -2712,49 +2704,22 @@ private fun LyricsPanel(
         val activeLineShiftPx = with(density) { -3.dp.toPx() }
         var userScrollSuspended by remember { mutableStateOf(false) }
         var userScrollRequest by remember { mutableIntStateOf(0) }
-        var dismissDragActive by remember { mutableStateOf(false) }
+        var seekScrollTargetIndex by remember { mutableIntStateOf(-1) }
         val lineHeights = remember(lyrics) {
             mutableStateListOf<Int>().apply {
                 repeat(lyrics.size) { add(0) }
             }
         }
         val lineHeightsTotal = lineHeights.sum()
-        val manualScrollConnection = remember(
-            onDismissDragStart,
-            onDismissDragDelta,
-            onDismissDragEnd
-        ) {
+        val manualScrollConnection = remember {
             object : NestedScrollConnection {
                 override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                     if (source == NestedScrollSource.UserInput && available.y != 0f) {
+                        seekScrollTargetIndex = -1
                         userScrollSuspended = true
                         userScrollRequest += 1
-                        if (available.y > 0f || dismissDragActive) {
-                            if (!dismissDragActive) {
-                                dismissDragActive = true
-                                onDismissDragStart()
-                            }
-                            onDismissDragDelta(available.y)
-                            return Offset(0f, available.y)
-                        }
                     }
                     return Offset.Zero
-                }
-
-                override suspend fun onPreFling(available: Velocity): Velocity {
-                    if (dismissDragActive) {
-                        dismissDragActive = false
-                        onDismissDragEnd()
-                    }
-                    return Velocity.Zero
-                }
-
-                override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                    if (dismissDragActive) {
-                        dismissDragActive = false
-                        onDismissDragEnd()
-                    }
-                    return Velocity.Zero
                 }
             }
         }
@@ -2780,10 +2745,24 @@ private fun LyricsPanel(
             scrollState.maxValue,
             viewportHeightPx,
             lineHeightsTotal,
-            userScrollSuspended
+            userScrollSuspended,
+            seekScrollTargetIndex
         ) {
-            if (lyrics.isNotEmpty() && !userScrollSuspended) {
-                scrollState.animateScrollTo(scrollTargetForIndex(activeIndex))
+            if (lyrics.isNotEmpty()) {
+                val targetIndex = seekScrollTargetIndex.takeIf { it >= 0 }
+                when {
+                    targetIndex != null -> {
+                        scrollState.animateScrollTo(scrollTargetForIndex(targetIndex))
+                        val activeTimeMs = lyrics.getOrNull(activeIndex)?.timeMs
+                        val targetTimeMs = lyrics.getOrNull(targetIndex)?.timeMs
+                        if (activeIndex == targetIndex || activeTimeMs == targetTimeMs) {
+                            seekScrollTargetIndex = -1
+                        }
+                    }
+                    !userScrollSuspended -> {
+                        scrollState.animateScrollTo(scrollTargetForIndex(activeIndex))
+                    }
+                }
             }
         }
 
@@ -2791,7 +2770,9 @@ private fun LyricsPanel(
             if (userScrollRequest > 0 && playing) {
                 delay(3_000)
                 userScrollSuspended = false
-                scrollState.animateScrollTo(scrollTargetForIndex(activeIndex))
+                if (seekScrollTargetIndex < 0) {
+                    scrollState.animateScrollTo(scrollTargetForIndex(activeIndex))
+                }
             }
         }
 
@@ -2842,11 +2823,9 @@ private fun LyricsPanel(
                                     songDurationMs.takeIf { it > 0L }
                                         ?: ((lyrics.lastOrNull()?.timeMs ?: line.timeMs) + 1_000L)
                                 )
+                                seekScrollTargetIndex = index
                                 userScrollSuspended = false
                                 onLyricSeek((line.timeMs.toFloat() / seekDurationMs.toFloat()).coerceIn(0f, 1f))
-                                scope.launch {
-                                    scrollState.animateScrollTo(scrollTargetForIndex(index))
-                                }
                             },
                             onHeightMeasured = { height ->
                                 if (lineHeights.getOrNull(index) != height) {
