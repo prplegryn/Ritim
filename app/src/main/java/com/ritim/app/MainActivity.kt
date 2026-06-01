@@ -1,8 +1,12 @@
 package com.ritim.app
 
 import android.Manifest
+import android.content.ContentUris
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -17,6 +21,7 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -45,6 +50,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -62,11 +68,14 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -82,6 +91,7 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.max
@@ -109,8 +119,16 @@ fun RitimApp() {
     }
     var selectedSongId by rememberSaveable { mutableStateOf<Long?>(null) }
     var playing by rememberSaveable { mutableStateOf(false) }
+    var playbackProgress by remember { mutableFloatStateOf(0f) }
     val currentSong = remember(displaySongs, selectedSongId) {
         displaySongs.firstOrNull { it.id == selectedSongId } ?: displaySongs.first()
+    }
+    val selectRelativeSong: (Int) -> Unit = { offset ->
+        val currentIndex = displaySongs.indexOfFirst { it.id == currentSong.id }.let { index ->
+            if (index >= 0) index else 0
+        }
+        val nextIndex = (currentIndex + offset + displaySongs.size) % displaySongs.size
+        selectedSongId = displaySongs[nextIndex].id
     }
     var selectedTabIndex by rememberSaveable { mutableStateOf(0) }
     var activePageIndex by rememberSaveable { mutableStateOf(0) }
@@ -123,6 +141,12 @@ fun RitimApp() {
     val blurRadius by animateFloatAsState(
         targetValue = if (playerBackdropActive) 14f else 0f,
         animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing)
+    )
+    AudioPlaybackEffect(
+        song = currentSong,
+        playing = playing,
+        onPlayingChange = { playing = it },
+        onProgressChange = { playbackProgress = it }
     )
 
     Box(
@@ -158,6 +182,7 @@ fun RitimApp() {
             song = currentSong,
             playing = playing,
             onPlayingChange = { playing = it },
+            onNext = { selectRelativeSong(1) },
             backdrop = backdrop,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -173,11 +198,138 @@ fun RitimApp() {
             PlayerCardPage(
                 song = currentSong,
                 playing = playing,
+                playbackProgress = playbackProgress,
                 onPlayingChange = { playing = it },
+                onPrevious = { selectRelativeSong(-1) },
+                onNext = { selectRelativeSong(1) },
                 onDismissStart = { playerBackdropActive = false },
                 onDismiss = { playerCardVisible = false },
                 modifier = Modifier.fillMaxSize()
             )
+        }
+    }
+}
+
+@Composable
+private fun AudioPlaybackEffect(
+    song: SongSample,
+    playing: Boolean,
+    onPlayingChange: (Boolean) -> Unit,
+    onProgressChange: (Float) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val playerHolder = remember { mutableStateOf<MediaPlayer?>(null) }
+    var preparedSongId by remember { mutableStateOf<Long?>(null) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            playerHolder.value?.release()
+            playerHolder.value = null
+        }
+    }
+
+    LaunchedEffect(context, song.id, playing) {
+        if (preparedSongId != song.id) {
+            playerHolder.value?.release()
+            playerHolder.value = null
+            preparedSongId = song.id
+            onProgressChange(0f)
+        }
+
+        if (!playing) {
+            playerHolder.value?.let { player ->
+                runCatching {
+                    if (player.isPlaying) player.pause()
+                }
+            }
+            return@LaunchedEffect
+        }
+
+        val uri = song.contentUri
+        if (uri == null) {
+            onPlayingChange(false)
+            onProgressChange(0f)
+            return@LaunchedEffect
+        }
+
+        val existingPlayer = playerHolder.value
+        if (existingPlayer != null) {
+            runCatching {
+                existingPlayer.start()
+            }.onFailure {
+                existingPlayer.release()
+                playerHolder.value = null
+                preparedSongId = null
+                onPlayingChange(false)
+                onProgressChange(0f)
+            }
+            return@LaunchedEffect
+        }
+
+        val player = MediaPlayer()
+        playerHolder.value = player
+        preparedSongId = song.id
+        runCatching {
+            player.setDataSource(context, uri)
+            player.setOnPreparedListener { preparedPlayer ->
+                scope.launch {
+                    if (preparedSongId == song.id && playing) {
+                        runCatching {
+                            preparedPlayer.start()
+                        }.onFailure {
+                            preparedPlayer.release()
+                            if (playerHolder.value === preparedPlayer) {
+                                playerHolder.value = null
+                            }
+                            preparedSongId = null
+                            onPlayingChange(false)
+                            onProgressChange(0f)
+                        }
+                    }
+                }
+            }
+            player.setOnCompletionListener { completedPlayer ->
+                scope.launch {
+                    runCatching { completedPlayer.seekTo(0) }
+                    onProgressChange(0f)
+                    onPlayingChange(false)
+                }
+            }
+            player.setOnErrorListener { failedPlayer, _, _ ->
+                scope.launch {
+                    failedPlayer.release()
+                    if (playerHolder.value === failedPlayer) {
+                        playerHolder.value = null
+                    }
+                    preparedSongId = null
+                    onProgressChange(0f)
+                    onPlayingChange(false)
+                }
+                true
+            }
+            player.prepareAsync()
+        }.onFailure {
+            player.release()
+            playerHolder.value = null
+            preparedSongId = null
+            onPlayingChange(false)
+            onProgressChange(0f)
+        }
+    }
+
+    LaunchedEffect(song.id, playing) {
+        while (playing) {
+            val player = playerHolder.value
+            val progress = runCatching {
+                if (player != null && player.duration > 0) {
+                    player.currentPosition.toFloat() / player.duration.toFloat()
+                } else {
+                    0f
+                }
+            }.getOrDefault(0f)
+            onProgressChange(progress.coerceIn(0f, 1f))
+            delay(300)
         }
     }
 }
@@ -406,12 +558,13 @@ private fun SongTile(
                 onClick = onClick
             )
     ) {
-        CoverArt(
-            colors = item.colors,
-            seed = item.seed,
+        SongCoverArt(
+            song = item,
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(if (tall) 2f / 3f else 1f)
+                .aspectRatio(if (tall) 2f / 3f else 1f),
+            cornerRadius = 10.dp,
+            generatedFallback = true
         )
         BasicText(
             item.title,
@@ -435,6 +588,36 @@ private fun SongTile(
                 fontWeight = FontWeight.Normal
             )
         )
+    }
+}
+
+@Composable
+private fun SongCoverArt(
+    song: SongSample,
+    modifier: Modifier = Modifier,
+    cornerRadius: Dp = 10.dp,
+    generatedFallback: Boolean = true
+) {
+    val image = rememberSongCover(song)
+    Box(
+        modifier
+            .clip(RoundedCornerShape(cornerRadius))
+            .background(song.colors.first())
+    ) {
+        if (image != null) {
+            Image(
+                bitmap = image,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else if (generatedFallback) {
+            CoverArt(
+                colors = song.colors,
+                seed = song.seed,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     }
 }
 
@@ -511,10 +694,80 @@ private data class SongSample(
     val artist: String,
     val colors: List<Color>,
     val seed: Int,
+    val albumId: Long = 0L,
     val durationMs: Long = 0L,
     val dateAddedSeconds: Long = 0L,
     val contentUri: Uri? = null
 )
+
+private val coverImageCache = mutableMapOf<Long, ImageBitmap?>()
+private val albumArtBaseUri: Uri = Uri.parse("content://media/external/audio/albumart")
+
+@Composable
+private fun rememberSongCover(song: SongSample): ImageBitmap? {
+    val context = LocalContext.current
+    var image by remember(song.id) {
+        mutableStateOf(cachedCoverImage(song.id))
+    }
+
+    LaunchedEffect(context, song.id, song.contentUri) {
+        if (!hasCachedCoverImage(song.id)) {
+            val loadedImage = loadSongCoverImage(
+                context = context,
+                uri = song.contentUri,
+                albumId = song.albumId
+            )
+            synchronized(coverImageCache) {
+                coverImageCache[song.id] = loadedImage
+            }
+            image = loadedImage
+        } else {
+            image = cachedCoverImage(song.id)
+        }
+    }
+
+    return image
+}
+
+private fun hasCachedCoverImage(songId: Long): Boolean =
+    synchronized(coverImageCache) {
+        coverImageCache.containsKey(songId)
+    }
+
+private fun cachedCoverImage(songId: Long): ImageBitmap? =
+    synchronized(coverImageCache) {
+        coverImageCache[songId]
+    }
+
+private suspend fun loadSongCoverImage(
+    context: Context,
+    uri: Uri?,
+    albumId: Long
+): ImageBitmap? =
+    withContext(Dispatchers.IO) {
+        val embeddedImage = if (uri == null) null else runCatching {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(context, uri)
+                val data = retriever.embeddedPicture ?: return@runCatching null
+                BitmapFactory.decodeByteArray(data, 0, data.size)?.asImageBitmap()
+            } finally {
+                runCatching { retriever.release() }
+            }
+        }.getOrNull()
+
+        embeddedImage ?: loadAlbumArtImage(context, albumId)
+    }
+
+private fun loadAlbumArtImage(context: Context, albumId: Long): ImageBitmap? {
+    if (albumId <= 0L) return null
+    val albumArtUri = ContentUris.withAppendedId(albumArtBaseUri, albumId)
+    return runCatching {
+        context.contentResolver.openInputStream(albumArtUri)?.use { stream ->
+            BitmapFactory.decodeStream(stream)?.asImageBitmap()
+        }
+    }.getOrNull()
+}
 
 @Composable
 private fun rememberMusicFolderSongs(): List<SongSample> {
@@ -596,6 +849,7 @@ private suspend fun loadMusicFolderSongs(context: Context): List<SongSample> =
             MediaStore.Audio.Media.TITLE,
             MediaStore.Audio.Media.DISPLAY_NAME,
             MediaStore.Audio.Media.ARTIST,
+            MediaStore.Audio.Media.ALBUM_ID,
             MediaStore.Audio.Media.DURATION,
             MediaStore.Audio.Media.DATE_ADDED,
             pathColumn
@@ -624,6 +878,7 @@ private suspend fun loadMusicFolderSongs(context: Context): List<SongSample> =
                 val titleIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
                 val displayNameIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)
                 val artistIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
+                val albumIdIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM_ID)
                 val durationIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
                 val dateAddedIndex = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
 
@@ -644,11 +899,12 @@ private suspend fun loadMusicFolderSongs(context: Context): List<SongSample> =
                                 artist = artist,
                                 colors = paletteForSeed(seed),
                                 seed = seed,
+                                albumId = cursorLong(cursor, albumIdIndex),
                                 durationMs = cursorLong(cursor, durationIndex),
                                 dateAddedSeconds = cursorLong(cursor, dateAddedIndex),
-                                contentUri = Uri.withAppendedPath(
+                                contentUri = ContentUris.withAppendedId(
                                     MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                                    id.toString()
+                                    id
                                 )
                             )
                         )
@@ -822,6 +1078,7 @@ private fun RitimBottomControls(
     song: SongSample,
     playing: Boolean,
     onPlayingChange: (Boolean) -> Unit,
+    onNext: () -> Unit,
     backdrop: Backdrop,
     modifier: Modifier = Modifier
 ) {
@@ -844,6 +1101,7 @@ private fun RitimBottomControls(
             song = song,
             playing = playing,
             onPlayingChange = onPlayingChange,
+            onNext = onNext,
             onClick = onMiniPlayerSelected,
             modifier = Modifier.fillMaxWidth()
         )
@@ -909,6 +1167,7 @@ private fun MiniPlayerBar(
     song: SongSample,
     playing: Boolean,
     onPlayingChange: (Boolean) -> Unit,
+    onNext: () -> Unit,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -999,7 +1258,7 @@ private fun MiniPlayerBar(
 
             MiniIconButton(
                 contentDescription = "下一曲",
-                onClick = {}
+                onClick = onNext
             ) {
                 NextGlyph(
                     modifier = Modifier.size(27.dp),
@@ -1047,7 +1306,10 @@ private fun MiniIconButton(
 private fun PlayerCardPage(
     song: SongSample,
     playing: Boolean,
+    playbackProgress: Float,
     onPlayingChange: (Boolean) -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
     onDismissStart: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
@@ -1126,7 +1388,7 @@ private fun PlayerCardPage(
                 Spacer(Modifier.height(if (compactPlayerLayout) 28.dp else 38.dp))
 
                 PlayerLine(
-                    progress = 0.28f,
+                    progress = playbackProgress,
                     modifier = Modifier.fillMaxWidth(),
                     height = 4.dp
                 )
@@ -1141,7 +1403,7 @@ private fun PlayerCardPage(
                     PlayerIconButton(
                         contentDescription = "上一曲",
                         size = 52.dp,
-                        onClick = {}
+                        onClick = onPrevious
                     ) {
                         PreviousGlyph(
                             modifier = Modifier.size(30.dp),
@@ -1164,7 +1426,7 @@ private fun PlayerCardPage(
                     PlayerIconButton(
                         contentDescription = "下一曲",
                         size = 52.dp,
-                        onClick = {}
+                        onClick = onNext
                     ) {
                         NextGlyph(
                             modifier = Modifier.size(30.dp),
@@ -1294,7 +1556,17 @@ private fun SolidCoverArt(
     song: SongSample,
     modifier: Modifier = Modifier
 ) {
-    Box(modifier.background(song.colors.first()))
+    val image = rememberSongCover(song)
+    Box(modifier.background(song.colors.first())) {
+        if (image != null) {
+            Image(
+                bitmap = image,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        }
+    }
 }
 
 @Composable
@@ -1302,32 +1574,42 @@ private fun CoverColorField(
     song: SongSample,
     modifier: Modifier = Modifier
 ) {
-    Box(
-        modifier.background(
-            Brush.linearGradient(
-                colors = song.colors,
-                start = Offset.Zero,
-                end = Offset(1200f, 1200f)
-            )
+    val image = rememberSongCover(song)
+    if (image != null) {
+        Image(
+            bitmap = image,
+            contentDescription = null,
+            modifier = modifier.background(song.colors.first()),
+            contentScale = ContentScale.Crop
         )
-    ) {
-        Canvas(Modifier.fillMaxSize()) {
-            val short = size.minDimension
-            drawCircle(
-                color = Color.White.copy(alpha = 0.26f),
-                radius = short * (0.28f + (song.seed and 3) * 0.03f),
-                center = Offset(size.width * 0.24f, size.height * 0.28f)
+    } else {
+        Box(
+            modifier.background(
+                Brush.linearGradient(
+                    colors = song.colors,
+                    start = Offset.Zero,
+                    end = Offset(1200f, 1200f)
+                )
             )
-            drawCircle(
-                color = Color.Black.copy(alpha = 0.13f),
-                radius = short * 0.48f,
-                center = Offset(size.width * 0.82f, size.height * 0.76f)
-            )
-            drawCircle(
-                color = song.colors.last().copy(alpha = 0.46f),
-                radius = short * 0.34f,
-                center = Offset(size.width * 0.70f, size.height * 0.20f)
-            )
+        ) {
+            Canvas(Modifier.fillMaxSize()) {
+                val short = size.minDimension
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.26f),
+                    radius = short * (0.28f + (song.seed and 3) * 0.03f),
+                    center = Offset(size.width * 0.24f, size.height * 0.28f)
+                )
+                drawCircle(
+                    color = Color.Black.copy(alpha = 0.13f),
+                    radius = short * 0.48f,
+                    center = Offset(size.width * 0.82f, size.height * 0.76f)
+                )
+                drawCircle(
+                    color = song.colors.last().copy(alpha = 0.46f),
+                    radius = short * 0.34f,
+                    center = Offset(size.width * 0.70f, size.height * 0.20f)
+                )
+            }
         }
     }
 }
