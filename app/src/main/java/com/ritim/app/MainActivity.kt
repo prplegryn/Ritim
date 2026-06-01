@@ -54,6 +54,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -173,15 +174,10 @@ fun RitimApp() {
     var selectedTabIndex by rememberSaveable { mutableStateOf(0) }
     var activePageIndex by rememberSaveable { mutableStateOf(0) }
     var playerCardVisible by rememberSaveable { mutableStateOf(false) }
-    var playerBackdropActive by rememberSaveable { mutableStateOf(false) }
-    val pageScale by animateFloatAsState(
-        targetValue = if (playerBackdropActive) 0.965f else 1f,
-        animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing)
-    )
-    val blurRadius by animateFloatAsState(
-        targetValue = if (playerBackdropActive) 14f else 0f,
-        animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing)
-    )
+    var playerBackdropProgress by remember { mutableFloatStateOf(0f) }
+    val pageScale = 1f - 0.035f * playerBackdropProgress
+    val blurRadius = 14f * playerBackdropProgress
+    val overlayAlpha = 0.30f * playerBackdropProgress
     AudioPlaybackEffect(
         song = currentSong,
         playing = playing,
@@ -224,7 +220,7 @@ fun RitimApp() {
             onSearchSelected = { activePageIndex = 3 },
             onMiniPlayerSelected = {
                 playbackProgress = playbackRuntimeTracker.progress
-                playerBackdropActive = true
+                playerBackdropProgress = 0f
                 playerCardVisible = true
             },
             song = currentSong,
@@ -241,7 +237,7 @@ fun RitimApp() {
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(Color.White.copy(alpha = if (playerBackdropActive) 0.30f else 0.08f))
+                    .background(Color.White.copy(alpha = overlayAlpha))
             )
             PlayerCardPage(
                 song = currentSong,
@@ -251,8 +247,11 @@ fun RitimApp() {
                 onSeek = requestSeek,
                 onPrevious = onPreviousSelected,
                 onNext = { selectRelativeSong(1) },
-                onDismissStart = { playerBackdropActive = false },
-                onDismiss = { playerCardVisible = false },
+                onBackdropProgressChange = { playerBackdropProgress = it },
+                onDismiss = {
+                    playerBackdropProgress = 0f
+                    playerCardVisible = false
+                },
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -1551,7 +1550,7 @@ private fun PlayerCardPage(
     onSeek: (Float) -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
-    onDismissStart: () -> Unit,
+    onBackdropProgressChange: (Float) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1570,11 +1569,19 @@ private fun PlayerCardPage(
     BoxWithConstraints(modifier) {
         val screenHeight = constraints.maxHeight.toFloat()
         val offsetY = (1f - progress.value) * screenHeight + dragOffset.value
+        val backdropProgress = if (screenHeight > 0f) {
+            (1f - offsetY / screenHeight).coerceIn(0f, 1f)
+        } else {
+            progress.value.coerceIn(0f, 1f)
+        }
         val compactPlayerLayout = maxHeight < 700.dp
         val coverSize = minOf(
             maxWidth - 56.dp,
             if (compactPlayerLayout) 254.dp else 304.dp
         )
+        SideEffect {
+            onBackdropProgressChange(backdropProgress)
+        }
 
         Box(
             Modifier
@@ -1735,7 +1742,6 @@ private fun PlayerCardPage(
                                     dragOffset.value > screenHeight * 0.12f || lastDownwardDrag > 18f
                                 if (shouldDismiss) {
                                     scope.launch {
-                                        onDismissStart()
                                         progress.animateTo(
                                             targetValue = 0f,
                                             animationSpec = tween(
