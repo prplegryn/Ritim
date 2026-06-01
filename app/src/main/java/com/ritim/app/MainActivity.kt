@@ -66,6 +66,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -79,6 +80,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -111,6 +113,18 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private data class SeekRequest(
+    val id: Int,
+    val progress: Float
+)
+
+private class PlaybackRuntimeTracker {
+    var progress: Float = 0f
+    var positionMs: Long = 0L
+}
+
+private const val previousRestartThresholdMs = 3_000L
+
 @Composable
 fun RitimApp() {
     val pageBackground = Color(0xFFF4F7F8)
@@ -125,8 +139,19 @@ fun RitimApp() {
     var selectedSongId by rememberSaveable { mutableStateOf<Long?>(null) }
     var playing by rememberSaveable { mutableStateOf(false) }
     var playbackProgress by remember { mutableFloatStateOf(0f) }
+    val playbackRuntimeTracker = remember { PlaybackRuntimeTracker() }
+    var seekRequestId by remember { mutableIntStateOf(0) }
+    var seekRequest by remember { mutableStateOf<SeekRequest?>(null) }
     val currentSong = remember(displaySongs, selectedSongId) {
         displaySongs.firstOrNull { it.id == selectedSongId } ?: displaySongs.first()
+    }
+    val requestSeek: (Float) -> Unit = { progress ->
+        val coercedProgress = progress.coerceIn(0f, 1f)
+        seekRequestId += 1
+        seekRequest = SeekRequest(seekRequestId, coercedProgress)
+        playbackProgress = coercedProgress
+        playbackRuntimeTracker.progress = coercedProgress
+        playbackRuntimeTracker.positionMs = (currentSong.durationMs * coercedProgress).toLong()
     }
     val selectRelativeSong: (Int) -> Unit = { offset ->
         val currentIndex = displaySongs.indexOfFirst { it.id == currentSong.id }.let { index ->
@@ -134,6 +159,16 @@ fun RitimApp() {
         }
         val nextIndex = (currentIndex + offset + displaySongs.size) % displaySongs.size
         selectedSongId = displaySongs[nextIndex].id
+        playbackProgress = 0f
+        playbackRuntimeTracker.progress = 0f
+        playbackRuntimeTracker.positionMs = 0L
+    }
+    val onPreviousSelected: () -> Unit = {
+        if (playbackRuntimeTracker.positionMs >= previousRestartThresholdMs) {
+            requestSeek(0f)
+        } else {
+            selectRelativeSong(-1)
+        }
     }
     var selectedTabIndex by rememberSaveable { mutableStateOf(0) }
     var activePageIndex by rememberSaveable { mutableStateOf(0) }
@@ -150,8 +185,15 @@ fun RitimApp() {
     AudioPlaybackEffect(
         song = currentSong,
         playing = playing,
+        seekRequest = seekRequest,
         onPlayingChange = { playing = it },
-        onProgressChange = { playbackProgress = it }
+        onProgressChange = {
+            playbackRuntimeTracker.progress = it
+            if (playerCardVisible) {
+                playbackProgress = it
+            }
+        },
+        onPositionChange = { playbackRuntimeTracker.positionMs = it }
     )
 
     Box(
@@ -181,6 +223,7 @@ fun RitimApp() {
             },
             onSearchSelected = { activePageIndex = 3 },
             onMiniPlayerSelected = {
+                playbackProgress = playbackRuntimeTracker.progress
                 playerBackdropActive = true
                 playerCardVisible = true
             },
@@ -205,7 +248,8 @@ fun RitimApp() {
                 playing = playing,
                 playbackProgress = playbackProgress,
                 onPlayingChange = { playing = it },
-                onPrevious = { selectRelativeSong(-1) },
+                onSeek = requestSeek,
+                onPrevious = onPreviousSelected,
                 onNext = { selectRelativeSong(1) },
                 onDismissStart = { playerBackdropActive = false },
                 onDismiss = { playerCardVisible = false },
@@ -219,8 +263,10 @@ fun RitimApp() {
 private fun AudioPlaybackEffect(
     song: SongSample,
     playing: Boolean,
+    seekRequest: SeekRequest?,
     onPlayingChange: (Boolean) -> Unit,
-    onProgressChange: (Float) -> Unit
+    onProgressChange: (Float) -> Unit,
+    onPositionChange: (Long) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -240,6 +286,7 @@ private fun AudioPlaybackEffect(
             playerHolder.value = null
             preparedSongId = song.id
             onProgressChange(0f)
+            onPositionChange(0L)
         }
 
         if (!playing) {
@@ -255,6 +302,7 @@ private fun AudioPlaybackEffect(
         if (uri == null) {
             onPlayingChange(false)
             onProgressChange(0f)
+            onPositionChange(0L)
             return@LaunchedEffect
         }
 
@@ -268,6 +316,7 @@ private fun AudioPlaybackEffect(
                 preparedSongId = null
                 onPlayingChange(false)
                 onProgressChange(0f)
+                onPositionChange(0L)
             }
             return@LaunchedEffect
         }
@@ -278,15 +327,23 @@ private fun AudioPlaybackEffect(
             preparedSongId = null
             onPlayingChange(false)
             onProgressChange(0f)
+            onPositionChange(0L)
             return@LaunchedEffect
         }
 
         playerHolder.value = player
         preparedSongId = song.id
+        seekRequest?.let { request ->
+            player.seekToProgress(request.progress)?.let { targetPosition ->
+                onProgressChange(request.progress.coerceIn(0f, 1f))
+                onPositionChange(targetPosition.toLong())
+            }
+        }
         player.setOnCompletionListener { completedPlayer ->
             scope.launch {
                 runCatching { completedPlayer.seekTo(0) }
                 onProgressChange(0f)
+                onPositionChange(0L)
                 onPlayingChange(false)
             }
         }
@@ -298,6 +355,7 @@ private fun AudioPlaybackEffect(
                 }
                 preparedSongId = null
                 onProgressChange(0f)
+                onPositionChange(0L)
                 onPlayingChange(false)
             }
             true
@@ -310,20 +368,32 @@ private fun AudioPlaybackEffect(
             preparedSongId = null
             onPlayingChange(false)
             onProgressChange(0f)
+            onPositionChange(0L)
+        }
+    }
+
+    LaunchedEffect(song.id, seekRequest?.id) {
+        val request = seekRequest ?: return@LaunchedEffect
+        val player = playerHolder.value ?: return@LaunchedEffect
+        player.seekToProgress(request.progress)?.let { targetPosition ->
+            onProgressChange(request.progress.coerceIn(0f, 1f))
+            onPositionChange(targetPosition.toLong())
         }
     }
 
     LaunchedEffect(song.id, playing) {
         while (playing) {
             val player = playerHolder.value
+            val position = runCatching { player?.currentPosition ?: 0 }.getOrDefault(0)
             val progress = runCatching {
                 if (player != null && player.duration > 0) {
-                    player.currentPosition.toFloat() / player.duration.toFloat()
+                    position.toFloat() / player.duration.toFloat()
                 } else {
                     0f
                 }
             }.getOrDefault(0f)
             onProgressChange(progress.coerceIn(0f, 1f))
+            onPositionChange(position.toLong())
             delay(300)
         }
     }
@@ -351,6 +421,20 @@ private suspend fun createMediaPlayer(context: Context, uri: Uri): MediaPlayer? 
             prepare()
         }
     }
+
+private fun MediaPlayer.seekToProgress(progress: Float): Int? =
+    runCatching {
+        val mediaDuration = duration
+        if (mediaDuration <= 0) {
+            null
+        } else {
+            val targetPosition = (mediaDuration * progress.coerceIn(0f, 1f))
+                .toInt()
+                .coerceIn(0, mediaDuration)
+            seekTo(targetPosition)
+            targetPosition
+        }
+    }.getOrNull()
 
 private fun createPreparedMediaPlayer(prepareBlock: MediaPlayer.() -> Unit): MediaPlayer? {
     val player = MediaPlayer()
@@ -1464,6 +1548,7 @@ private fun PlayerCardPage(
     playing: Boolean,
     playbackProgress: Float,
     onPlayingChange: (Boolean) -> Unit,
+    onSeek: (Float) -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onDismissStart: () -> Unit,
@@ -1490,7 +1575,6 @@ private fun PlayerCardPage(
             maxWidth - 56.dp,
             if (compactPlayerLayout) 254.dp else 304.dp
         )
-        val controlGap = if (compactPlayerLayout) 26.dp else 34.dp
 
         Box(
             Modifier
@@ -1498,7 +1582,10 @@ private fun PlayerCardPage(
                 .graphicsLayer {
                     translationY = offsetY
                     alpha = 0.90f + 0.10f * progress.value
+                    clip = true
+                    shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)
                 }
+                .clipToBounds()
                 .background(Color.Black)
         ) {
             CoverColorField(
@@ -1523,7 +1610,7 @@ private fun PlayerCardPage(
                     .statusBarsPadding()
                     .navigationBarsPadding()
                     .padding(horizontal = 28.dp)
-                    .padding(top = 14.dp, bottom = controlGap),
+                    .padding(top = 14.dp, bottom = if (compactPlayerLayout) 26.dp else 30.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Box(
@@ -1533,7 +1620,7 @@ private fun PlayerCardPage(
                         .background(Color.White.copy(alpha = 0.42f))
                 )
 
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.height(if (compactPlayerLayout) 28.dp else 42.dp))
 
                 SolidCoverArt(
                     song = song,
@@ -1542,92 +1629,93 @@ private fun PlayerCardPage(
                         .clip(RoundedCornerShape(16.dp))
                 )
 
-                Spacer(Modifier.height(controlGap))
-
-                PlayerLine(
-                    progress = playbackProgress,
-                    modifier = Modifier.fillMaxWidth(),
-                    height = 4.dp
-                )
-
-                Spacer(Modifier.height(controlGap))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    verticalArrangement = Arrangement.SpaceEvenly,
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    PlayerIconButton(
-                        contentDescription = "上一曲",
-                        size = 52.dp,
-                        onClick = onPrevious
-                    ) {
-                        PreviousGlyph(
-                            modifier = Modifier.size(30.dp),
-                            color = Color.White
-                        )
-                    }
-                    Spacer(Modifier.width(28.dp))
-                    PlayerIconButton(
-                        contentDescription = if (playing) "暂停" else "播放",
-                        size = 70.dp,
-                        onClick = { onPlayingChange(!playing) }
-                    ) {
-                        PlayPauseGlyph(
-                            playing = playing,
-                            modifier = Modifier.size(40.dp),
-                            color = Color.White
-                        )
-                    }
-                    Spacer(Modifier.width(28.dp))
-                    PlayerIconButton(
-                        contentDescription = "下一曲",
-                        size = 52.dp,
-                        onClick = onNext
-                    ) {
-                        NextGlyph(
-                            modifier = Modifier.size(30.dp),
-                            color = Color.White
-                        )
-                    }
-                }
+                    ScrubbablePlayerLine(
+                        progress = playbackProgress,
+                        onSeek = onSeek,
+                        modifier = Modifier.fillMaxWidth(),
+                        height = 4.dp
+                    )
 
-                Spacer(Modifier.height(controlGap))
-
-                PlayerLine(
-                    progress = 0.68f,
-                    modifier = Modifier.fillMaxWidth(),
-                    height = 3.dp
-                )
-
-                Spacer(Modifier.height(controlGap))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    PlayerIconButton(
-                        contentDescription = "歌词",
-                        size = 48.dp,
-                        onClick = {},
-                        pressScale = 0.97f
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        LyricsGlyph(
-                            modifier = Modifier.size(24.dp),
-                            color = Color.White
-                        )
+                        PlayerIconButton(
+                            contentDescription = "上一曲",
+                            size = 52.dp,
+                            onClick = onPrevious
+                        ) {
+                            PreviousGlyph(
+                                modifier = Modifier.size(30.dp),
+                                color = Color.White
+                            )
+                        }
+                        Spacer(Modifier.width(28.dp))
+                        PlayerIconButton(
+                            contentDescription = if (playing) "暂停" else "播放",
+                            size = 70.dp,
+                            onClick = { onPlayingChange(!playing) }
+                        ) {
+                            PlayPauseGlyph(
+                                playing = playing,
+                                modifier = Modifier.size(40.dp),
+                                color = Color.White
+                            )
+                        }
+                        Spacer(Modifier.width(28.dp))
+                        PlayerIconButton(
+                            contentDescription = "下一曲",
+                            size = 52.dp,
+                            onClick = onNext
+                        ) {
+                            NextGlyph(
+                                modifier = Modifier.size(30.dp),
+                                color = Color.White
+                            )
+                        }
                     }
-                    PlayerIconButton(
-                        contentDescription = "播放列表",
-                        size = 48.dp,
-                        onClick = {},
-                        pressScale = 0.97f
+
+                    PlayerLine(
+                        progress = 0.68f,
+                        modifier = Modifier.fillMaxWidth(),
+                        height = 3.dp
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        PlaylistGlyph(
-                            modifier = Modifier.size(25.dp),
-                            color = Color.White
-                        )
+                        PlayerIconButton(
+                            contentDescription = "歌词",
+                            size = 48.dp,
+                            onClick = {},
+                            pressScale = 0.97f
+                        ) {
+                            LyricsGlyph(
+                                modifier = Modifier.size(24.dp),
+                                color = Color.White
+                            )
+                        }
+                        PlayerIconButton(
+                            contentDescription = "播放列表",
+                            size = 48.dp,
+                            onClick = {},
+                            pressScale = 0.97f
+                        ) {
+                            PlaylistGlyph(
+                                modifier = Modifier.size(25.dp),
+                                color = Color.White
+                            )
+                        }
                     }
                 }
             }
@@ -1768,6 +1856,61 @@ private fun CoverColorField(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun ScrubbablePlayerLine(
+    progress: Float,
+    onSeek: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+    height: Dp = 4.dp
+) {
+    val density = LocalDensity.current
+    var dragging by remember { mutableStateOf(false) }
+    val animatedHeight by animateFloatAsState(
+        targetValue = if (dragging) height.value + 1.1f else height.value,
+        animationSpec = tween(durationMillis = 80)
+    )
+
+    BoxWithConstraints(
+        modifier
+            .height(20.dp)
+            .fillMaxWidth(),
+        contentAlignment = Alignment.Center
+    ) {
+        val widthPx = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
+        PlayerLine(
+            progress = progress,
+            modifier = Modifier.fillMaxWidth(),
+            height = animatedHeight.dp
+        )
+        Box(
+            Modifier
+                .matchParentSize()
+                .pointerInput(widthPx) {
+                    fun seekTo(offsetX: Float) {
+                        onSeek((offsetX / widthPx).coerceIn(0f, 1f))
+                    }
+
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            dragging = true
+                            seekTo(offset.x)
+                        },
+                        onDragEnd = {
+                            dragging = false
+                        },
+                        onDragCancel = {
+                            dragging = false
+                        },
+                        onDrag = { change, _ ->
+                            change.consume()
+                            seekTo(change.position.x)
+                        }
+                    )
+                }
+        )
     }
 }
 
