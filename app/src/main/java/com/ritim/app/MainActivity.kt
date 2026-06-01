@@ -128,7 +128,6 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.Charset
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlinx.coroutines.coroutineScope
@@ -1746,9 +1745,6 @@ private suspend fun loadOrCreateTranslatedLyrics(
         }
 
         val sourceLanguage = runCatching {
-            val folder = File(sourceFile.parentFile, "translatedLyrics")
-            folder.mkdirs()
-            sourceFile.copyTo(File(folder, sourceFile.name), overwrite = true)
             detectLyricsLanguage(song, sourceLyrics, settings)
         }.getOrNull().orEmpty()
         if (sameLanguage(sourceLanguage, settings.targetLanguage)) {
@@ -1833,11 +1829,10 @@ private suspend fun translateLyricLines(
     }
 
 private fun translatedLyricsFile(sourceFile: File, targetLanguage: String): File {
-    val folder = File(sourceFile.parentFile, "translatedLyrics")
     val baseName = sourceFile.name.substringBeforeLast('.', sourceFile.name)
     val languageName = targetLanguage.ifBlank { "中文" }
         .replace(Regex("""[\\/:*?"<>|]"""), "_")
-    return File(folder, "$baseName.$languageName.lrc")
+    return File(sourceFile.parentFile, "$baseName.$languageName.lrc")
 }
 
 private suspend fun hasCachedTranslatedLyrics(
@@ -2763,11 +2758,8 @@ private fun PlayerCardPage(
         }
     }
     LaunchedEffect(song.id, translationState.status) {
-        if (
-            translationState.status == LyricsTranslationStatus.NotNeeded ||
-            translationState.status == LyricsTranslationStatus.Failed
-        ) {
-            delay(if (translationState.status == LyricsTranslationStatus.NotNeeded) 420 else 700)
+        if (translationState.status == LyricsTranslationStatus.NotNeeded) {
+            delay(420)
             if (translationActiveSongId == song.id) {
                 translationActiveSongId = null
             }
@@ -3368,7 +3360,7 @@ private fun TranslationPillButton(
         animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
     )
     val backgroundColor = when {
-        loading -> Color.White.copy(alpha = 0.16f + 0.20f * pulse.value)
+        loading -> Color.White.copy(alpha = 0.24f + 0.34f * pulse.value)
         status == LyricsTranslationStatus.Failed -> Color(0xFFFFE1E1).copy(alpha = 0.26f)
         status == LyricsTranslationStatus.NotNeeded -> Color.White.copy(alpha = 0.20f)
         selected -> Color.White
@@ -3611,6 +3603,74 @@ private fun LyricsPanel(
                 scrollState.animateScrollTo(scrollTargetForIndex(activeIndex))
             }
         }
+        val bilingualVisible = translationsVisible && translatedLyrics.isNotEmpty()
+        var panelCurrentBilingual by remember { mutableStateOf(bilingualVisible) }
+        var panelPreviousBilingual by remember { mutableStateOf(bilingualVisible) }
+        val panelTransition = remember { Animatable(1f) }
+        LaunchedEffect(bilingualVisible) {
+            if (bilingualVisible != panelCurrentBilingual) {
+                panelPreviousBilingual = panelCurrentBilingual
+                panelCurrentBilingual = bilingualVisible
+                panelTransition.snapTo(0f)
+                panelTransition.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing)
+                )
+            }
+        }
+
+        @Composable
+        fun LyricsColumnLayer(
+            showTranslations: Boolean,
+            measureHeights: Boolean,
+            modifier: Modifier = Modifier
+        ) {
+            Column(
+                modifier
+                    .fillMaxSize()
+                    .nestedScroll(manualScrollConnection)
+                    .verticalScroll(scrollState)
+                    .padding(horizontal = edgePadding)
+                    .padding(top = activeAnchorFromTop, bottom = activeAnchorBottomPadding),
+                verticalArrangement = Arrangement.spacedBy(lineSpacing)
+            ) {
+                lyrics.forEachIndexed { index, line ->
+                    val active = index == activeIndex
+                    val nextTimeMs = lyrics.getOrNull(index + 1)?.timeMs
+                    val lineEndMs = nextTimeMs ?: songDurationMs.takeIf { it > line.timeMs }
+                    val lineDurationMs = ((lineEndMs ?: (line.timeMs + 4_200L)) - line.timeMs)
+                        .coerceAtLeast(1_200L)
+                    LyricsMarqueeLine(
+                        text = line.text,
+                        active = active,
+                        scrolling = active && currentPositionMs >= line.timeMs,
+                        durationMs = lineDurationMs,
+                        elapsedMs = (currentPositionMs - line.timeMs).coerceAtLeast(0L),
+                        translation = if (showTranslations) {
+                            translatedLyrics[line.timeMs].orEmpty()
+                        } else {
+                            ""
+                        },
+                        activeLineShiftPx = activeLineShiftPx,
+                        onClick = {
+                            val seekDurationMs = max(
+                                1L,
+                                songDurationMs.takeIf { it > 0L }
+                                    ?: ((lyrics.lastOrNull()?.timeMs ?: line.timeMs) + 1_000L)
+                            )
+                            userScrollSuspended = true
+                            userScrollRequest += 1
+                            onLyricSeek((line.timeMs.toFloat() / seekDurationMs.toFloat()).coerceIn(0f, 1f))
+                        },
+                        onHeightMeasured = { height ->
+                            if (measureHeights && lineHeights.getOrNull(index) != height) {
+                                lineHeights[index] = height
+                            }
+                        }
+                    )
+                }
+            }
+        }
 
         Box(
             Modifier
@@ -3637,49 +3697,26 @@ private fun LyricsPanel(
                     }
                 }
             } else {
-                Column(
-                    Modifier
-                        .fillMaxSize()
-                        .nestedScroll(manualScrollConnection)
-                        .verticalScroll(scrollState)
-                        .padding(horizontal = edgePadding)
-                        .padding(top = activeAnchorFromTop, bottom = activeAnchorBottomPadding),
-                    verticalArrangement = Arrangement.spacedBy(lineSpacing)
-                ) {
-                    lyrics.forEachIndexed { index, line ->
-                        val active = index == activeIndex
-                        val nextTimeMs = lyrics.getOrNull(index + 1)?.timeMs
-                        val lineEndMs = nextTimeMs ?: songDurationMs.takeIf { it > line.timeMs }
-                        val lineDurationMs = ((lineEndMs ?: (line.timeMs + 4_200L)) - line.timeMs)
-                            .coerceAtLeast(1_200L)
-                        LyricsMarqueeLine(
-                            text = line.text,
-                            active = active,
-                            scrolling = active && currentPositionMs >= line.timeMs,
-                            durationMs = lineDurationMs,
-                            elapsedMs = (currentPositionMs - line.timeMs).coerceAtLeast(0L),
-                            translation = translatedLyrics[line.timeMs].orEmpty(),
-                            translationVisible = translationsVisible,
-                            translationRevealDelayMillis = minOf(abs(index - activeIndex) * 22, 260),
-                            activeLineShiftPx = activeLineShiftPx,
-                            onClick = {
-                                val seekDurationMs = max(
-                                    1L,
-                                    songDurationMs.takeIf { it > 0L }
-                                        ?: ((lyrics.lastOrNull()?.timeMs ?: line.timeMs) + 1_000L)
-                                )
-                                userScrollSuspended = true
-                                userScrollRequest += 1
-                                onLyricSeek((line.timeMs.toFloat() / seekDurationMs.toFloat()).coerceIn(0f, 1f))
-                            },
-                            onHeightMeasured = { height ->
-                                if (lineHeights.getOrNull(index) != height) {
-                                    lineHeights[index] = height
-                                }
-                            }
-                        )
-                    }
+                val transitionValue = panelTransition.value
+                val direction = if (panelCurrentBilingual) 1f else -1f
+                if (transitionValue < 1f) {
+                    LyricsColumnLayer(
+                        showTranslations = panelPreviousBilingual,
+                        measureHeights = false,
+                        modifier = Modifier.graphicsLayer {
+                            alpha = 1f - transitionValue
+                            translationX = -direction * size.width * 0.16f * transitionValue
+                        }
+                    )
                 }
+                LyricsColumnLayer(
+                    showTranslations = panelCurrentBilingual,
+                    measureHeights = true,
+                    modifier = Modifier.graphicsLayer {
+                        alpha = 0.12f + 0.88f * transitionValue
+                        translationX = direction * size.width * 0.16f * (1f - transitionValue)
+                    }
+                )
             }
         }
     }
@@ -3693,8 +3730,6 @@ private fun LyricsMarqueeLine(
     durationMs: Long,
     elapsedMs: Long,
     translation: String,
-    translationVisible: Boolean,
-    translationRevealDelayMillis: Int,
     activeLineShiftPx: Float,
     onClick: () -> Unit,
     onHeightMeasured: (Int) -> Unit,
@@ -3725,21 +3760,6 @@ private fun LyricsMarqueeLine(
             targetValue = if (active) activeLineShiftPx else 0f,
             animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
         )
-        val translationProgress = remember(text, translation) { Animatable(0f) }
-        LaunchedEffect(translationVisible, translation, translationRevealDelayMillis) {
-            if (translationVisible && translation.isNotBlank()) {
-                delay(translationRevealDelayMillis.toLong())
-                translationProgress.animateTo(
-                    targetValue = 1f,
-                    animationSpec = tween(durationMillis = 210, easing = FastOutSlowInEasing)
-                )
-            } else {
-                translationProgress.animateTo(
-                    targetValue = 0f,
-                    animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing)
-                )
-            }
-        }
         val verticalPadding = if (active && hiddenDistancePx > 1f) {
             30.dp
         } else if (active) {
@@ -3819,31 +3839,19 @@ private fun LyricsMarqueeLine(
                     )
                 )
                 if (translation.isNotBlank()) {
-                    Box(
-                        modifier = Modifier
-                            .padding(start = 12.dp)
-                            .height(17.dp * translationProgress.value)
-                            .clipToBounds()
-                            .lyricsTranslationRevealFade()
-                            .graphicsLayer {
-                                alpha = translationProgress.value * if (active) 0.72f else 0.46f
-                                translationY = (1f - translationProgress.value) * -4.dp.toPx()
-                            }
-                            .padding(top = 2.dp * translationProgress.value)
-                    ) {
-                        BasicText(
-                            translation,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = TextStyle(
-                                color = Color.White,
-                                fontSize = 11.sp,
-                                lineHeight = 15.sp,
-                                fontFamily = FontFamily.SansSerif,
-                                fontWeight = FontWeight.Bold
-                            )
+                    BasicText(
+                        translation,
+                        modifier = Modifier.padding(start = 12.dp, top = 2.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = TextStyle(
+                            color = Color.White.copy(alpha = if (active) 0.72f else 0.44f),
+                            fontSize = 12.sp,
+                            lineHeight = 18.sp,
+                            fontFamily = FontFamily.SansSerif,
+                            fontWeight = FontWeight.Bold
                         )
-                    }
+                    )
                 }
             }
         }
@@ -3895,27 +3903,6 @@ private fun Modifier.lyricsHorizontalFade(
                         edgeStop to Color.Black,
                         (1f - edgeStop) to Color.Black,
                         1f to Color.Transparent
-                    )
-                ),
-                blendMode = BlendMode.DstIn
-            )
-        }
-    }
-
-private fun Modifier.lyricsTranslationRevealFade(): Modifier =
-    graphicsLayer {
-        compositingStrategy = CompositingStrategy.Offscreen
-    }.drawWithContent {
-        drawContent()
-        val edgePx = 8.dp.toPx().coerceAtMost(size.height)
-        if (edgePx > 0f && size.height > 0f) {
-            val edgeStop = edgePx / size.height
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colorStops = arrayOf(
-                        0f to Color.Transparent,
-                        edgeStop to Color.Black,
-                        1f to Color.Black
                     )
                 ),
                 blendMode = BlendMode.DstIn
