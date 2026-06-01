@@ -53,6 +53,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -117,9 +118,14 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.nio.charset.Charset
 import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -232,6 +238,9 @@ fun RitimApp() {
     var playerLyricsVisible by rememberSaveable { mutableStateOf(false) }
     var playerDismissRequestId by remember { mutableIntStateOf(0) }
     var playerBackdropProgress by remember { mutableFloatStateOf(0f) }
+    var aiLyricsSettings by remember(context) {
+        mutableStateOf(loadAiLyricsTranslationSettings(context))
+    }
     val pageScale = 1f - 0.035f * playerBackdropProgress
     val blurRadius = 14f * playerBackdropProgress
     val overlayAlpha = 0.30f * playerBackdropProgress
@@ -254,6 +263,12 @@ fun RitimApp() {
             playerCardVisible -> {
                 playerDismissRequestId += 1
             }
+            activePageIndex == 5 -> {
+                activePageIndex = 4
+            }
+            activePageIndex == 4 -> {
+                activePageIndex = 2
+            }
             activePageIndex == 3 -> {
                 activePageIndex = selectedTabIndex
             }
@@ -273,6 +288,15 @@ fun RitimApp() {
             pageIndex = activePageIndex,
             songs = displaySongs,
             onSongSelected = selectSongForPlayback,
+            aiLyricsSettings = aiLyricsSettings,
+            onSettingsSelected = { activePageIndex = 4 },
+            onAiLyricsSettingsSelected = { activePageIndex = 5 },
+            onAiLyricsSettingsSave = { settings ->
+                aiLyricsSettings = settings
+                scope.launch {
+                    saveAiLyricsTranslationSettings(context, settings)
+                }
+            },
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
@@ -319,6 +343,7 @@ fun RitimApp() {
                 volume = playerVolume,
                 favorite = favoriteSongIds.contains(currentSong.id),
                 lyricsVisible = playerLyricsVisible,
+                aiLyricsSettings = aiLyricsSettings,
                 dismissRequestId = playerDismissRequestId,
                 onPlayingChange = { playing = it },
                 onSeek = requestSeek,
@@ -560,9 +585,13 @@ private fun RitimPageBackground(
     pageIndex: Int,
     songs: List<SongSample>,
     onSongSelected: (SongSample) -> Unit,
+    aiLyricsSettings: AiLyricsTranslationSettings,
+    onSettingsSelected: () -> Unit,
+    onAiLyricsSettingsSelected: () -> Unit,
+    onAiLyricsSettingsSave: (AiLyricsTranslationSettings) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val targetIndex = pageIndex.coerceIn(0, 3)
+    val targetIndex = pageIndex.coerceIn(0, 5)
     var currentIndex by remember { mutableIntStateOf(targetIndex) }
     var previousIndex by remember { mutableIntStateOf(targetIndex) }
     var direction by remember { mutableIntStateOf(0) }
@@ -593,6 +622,10 @@ private fun RitimPageBackground(
                 pageIndex = previousIndex,
                 songs = songs,
                 onSongSelected = onSongSelected,
+                aiLyricsSettings = aiLyricsSettings,
+                onSettingsSelected = onSettingsSelected,
+                onAiLyricsSettingsSelected = onAiLyricsSettingsSelected,
+                onAiLyricsSettingsSave = onAiLyricsSettingsSave,
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
@@ -618,6 +651,10 @@ private fun RitimPageBackground(
             pageIndex = currentIndex,
             songs = songs,
             onSongSelected = onSongSelected,
+            aiLyricsSettings = aiLyricsSettings,
+            onSettingsSelected = onSettingsSelected,
+            onAiLyricsSettingsSelected = onAiLyricsSettingsSelected,
+            onAiLyricsSettingsSave = onAiLyricsSettingsSave,
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
@@ -647,6 +684,10 @@ private fun PageLayer(
     pageIndex: Int,
     songs: List<SongSample>,
     onSongSelected: (SongSample) -> Unit,
+    aiLyricsSettings: AiLyricsTranslationSettings,
+    onSettingsSelected: () -> Unit,
+    onAiLyricsSettingsSelected: () -> Unit,
+    onAiLyricsSettingsSave: (AiLyricsTranslationSettings) -> Unit,
     modifier: Modifier = Modifier
 ) {
     when (pageIndex) {
@@ -655,13 +696,361 @@ private fun PageLayer(
             onSongSelected = onSongSelected,
             modifier = modifier
         )
+        2 -> MinePage(
+            onSettingsSelected = onSettingsSelected,
+            modifier = modifier
+        )
         3 -> Box(modifier.background(Color.White))
+        4 -> SettingsPage(
+            onAiLyricsSettingsSelected = onAiLyricsSettingsSelected,
+            modifier = modifier
+        )
+        5 -> AiLyricsSettingsPage(
+            settings = aiLyricsSettings,
+            onSave = onAiLyricsSettingsSave,
+            modifier = modifier
+        )
         else -> {
             PageBackgroundLayer(
                 visual = pageVisual(pageIndex),
                 modifier = modifier
             )
         }
+    }
+}
+
+@Composable
+private fun MinePage(
+    onSettingsSelected: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier
+            .background(Color.White)
+            .fillMaxSize()
+            .statusBarsPadding()
+            .padding(top = 20.dp, bottom = 166.dp)
+    ) {
+        SettingsMenuRow(
+            title = "设置",
+            onClick = onSettingsSelected,
+            modifier = Modifier.padding(horizontal = 16.dp)
+        )
+    }
+}
+
+@Composable
+private fun SettingsPage(
+    onAiLyricsSettingsSelected: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier
+            .background(Color.White)
+            .fillMaxSize()
+            .statusBarsPadding()
+            .padding(top = 20.dp, bottom = 166.dp)
+    ) {
+        SettingsMenuRow(
+            title = "AI歌词翻译",
+            onClick = onAiLyricsSettingsSelected,
+            modifier = Modifier.padding(horizontal = 16.dp)
+        )
+    }
+}
+
+@Composable
+private fun AiLyricsSettingsPage(
+    settings: AiLyricsTranslationSettings,
+    onSave: (AiLyricsTranslationSettings) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var targetLanguage by remember(settings) { mutableStateOf(settings.targetLanguage) }
+    var apiBaseUrl by remember(settings) { mutableStateOf(settings.apiBaseUrl) }
+    var apiKey by remember(settings) { mutableStateOf(settings.apiKey) }
+    var modelName by remember(settings) { mutableStateOf(settings.modelName) }
+    val scrollState = rememberScrollState()
+
+    Column(
+        modifier
+            .background(Color.White)
+            .fillMaxSize()
+            .verticalScroll(scrollState)
+            .statusBarsPadding()
+            .padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 186.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        SettingsLanguageDropdown(
+            label = "目标翻译语言",
+            value = targetLanguage,
+            onValueChange = { targetLanguage = it }
+        )
+        SettingsInputField(
+            label = "API baseurl",
+            value = apiBaseUrl,
+            onValueChange = { apiBaseUrl = it },
+            placeholder = "https://api.openai.com/v1"
+        )
+        SettingsInputField(
+            label = "API Key",
+            value = apiKey,
+            onValueChange = { apiKey = it },
+            placeholder = "sk-..."
+        )
+        SettingsInputField(
+            label = "AI模型名",
+            value = modelName,
+            onValueChange = { modelName = it },
+            placeholder = "gpt-4o-mini"
+        )
+        SettingsSaveButton(
+            onClick = {
+                onSave(
+                    AiLyricsTranslationSettings(
+                        targetLanguage = targetLanguage.trim().ifBlank { "中文" },
+                        apiBaseUrl = apiBaseUrl.trim(),
+                        apiKey = apiKey.trim(),
+                        modelName = modelName.trim()
+                    )
+                )
+            },
+            modifier = Modifier.padding(top = 4.dp)
+        )
+    }
+}
+
+@Composable
+private fun SettingsMenuRow(
+    title: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.99f else 1f,
+        animationSpec = tween(durationMillis = 120)
+    )
+
+    Row(
+        modifier
+            .fillMaxWidth()
+            .height(56.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFFF5F7F8))
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                role = Role.Button,
+                onClick = onClick
+            )
+            .padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        BasicText(
+            title,
+            style = TextStyle(
+                color = Color(0xFF111315),
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium
+            )
+        )
+        ThickChevron(
+            modifier = Modifier.size(14.dp),
+            color = Color(0xFF3C4145)
+        )
+    }
+}
+
+@Composable
+private fun SettingsLanguageDropdown(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val languages = listOf("中文", "英语", "日语", "韩语", "法语", "德语", "西班牙语")
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SettingsFieldLabel(label)
+        Column {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFFF5F7F8))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        role = Role.Button,
+                        onClick = { expanded = !expanded }
+                    )
+                    .padding(horizontal = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                BasicText(
+                    value.ifBlank { "中文" },
+                    style = TextStyle(
+                        color = Color(0xFF151719),
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                )
+                ThickChevron(
+                    modifier = Modifier
+                        .size(13.dp)
+                        .graphicsLayer { rotationZ = if (expanded) 90f else 0f },
+                    color = Color(0xFF596168)
+                )
+            }
+
+            if (expanded) {
+                Column(
+                    Modifier
+                        .padding(top = 6.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFFF5F7F8))
+                ) {
+                    languages.forEach { language ->
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(42.dp)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    role = Role.Button,
+                                    onClick = {
+                                        onValueChange(language)
+                                        expanded = false
+                                    }
+                                )
+                                .padding(horizontal = 14.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            BasicText(
+                                language,
+                                style = TextStyle(
+                                    color = if (language == value) {
+                                        Color(0xFF0088FF)
+                                    } else {
+                                        Color(0xFF151719)
+                                    },
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsInputField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SettingsFieldLabel(label)
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = true,
+            textStyle = TextStyle(
+                color = Color(0xFF151719),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0xFFF5F7F8))
+                .padding(horizontal = 14.dp),
+            decorationBox = { innerTextField ->
+                Box(
+                    Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    if (value.isBlank()) {
+                        BasicText(
+                            placeholder,
+                            style = TextStyle(
+                                color = Color(0xFF9AA2A9),
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Normal
+                            )
+                        )
+                    }
+                    innerTextField()
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun SettingsFieldLabel(label: String) {
+    BasicText(
+        label,
+        style = TextStyle(
+            color = Color(0xFF626A71),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium
+        )
+    )
+}
+
+@Composable
+private fun SettingsSaveButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.98f else 1f,
+        animationSpec = tween(durationMillis = 120)
+    )
+
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(50.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFF111315))
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                role = Role.Button,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(
+            "保存",
+            style = TextStyle(
+                color = Color.White,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
     }
 }
 
@@ -931,8 +1320,20 @@ private data class LrcLine(
     val text: String
 )
 
+private data class LyricsLoadState(
+    val lines: List<LrcLine> = emptyList(),
+    val loaded: Boolean = false
+)
+
 private data class MusicLibraryIndex(
     val favoriteSongIds: Set<Long> = emptySet()
+)
+
+private data class AiLyricsTranslationSettings(
+    val targetLanguage: String = "中文",
+    val apiBaseUrl: String = "",
+    val apiKey: String = "",
+    val modelName: String = ""
 )
 
 private val coverImageCache = mutableMapOf<Long, ImageBitmap?>()
@@ -1154,18 +1555,53 @@ private fun loadMusicLibraryIndex(context: Context): MusicLibraryIndex =
 private fun musicLibraryIndexFile(context: Context): File =
     File(context.filesDir, "music_library_index.json")
 
+private suspend fun saveAiLyricsTranslationSettings(
+    context: Context,
+    settings: AiLyricsTranslationSettings
+) =
+    withContext(Dispatchers.IO) {
+        runCatching {
+            val json = JSONObject()
+                .put("targetLanguage", settings.targetLanguage)
+                .put("apiBaseUrl", settings.apiBaseUrl)
+                .put("apiKey", settings.apiKey)
+                .put("modelName", settings.modelName)
+            aiLyricsTranslationSettingsFile(context).writeText(json.toString())
+        }
+    }
+
+private fun loadAiLyricsTranslationSettings(context: Context): AiLyricsTranslationSettings =
+    runCatching {
+        val file = aiLyricsTranslationSettingsFile(context)
+        if (!file.exists()) return@runCatching AiLyricsTranslationSettings()
+        val json = JSONObject(file.readText())
+        AiLyricsTranslationSettings(
+            targetLanguage = json.optString("targetLanguage", "中文").ifBlank { "中文" },
+            apiBaseUrl = json.optString("apiBaseUrl"),
+            apiKey = json.optString("apiKey"),
+            modelName = json.optString("modelName")
+        )
+    }.getOrDefault(AiLyricsTranslationSettings())
+
+private fun aiLyricsTranslationSettingsFile(context: Context): File =
+    File(context.filesDir, "ai_lyrics_translation_settings.json")
+
 @Composable
-private fun rememberSongLyrics(song: SongSample): List<LrcLine> {
+private fun rememberSongLyricsState(song: SongSample): LyricsLoadState {
     val context = LocalContext.current
-    var lyrics by remember(song.id, song.displayName, song.relativePath, song.filePath) {
-        mutableStateOf(emptyList<LrcLine>())
+    var lyricsState by remember(song.id, song.displayName, song.relativePath, song.filePath) {
+        mutableStateOf(LyricsLoadState())
     }
 
     LaunchedEffect(context, song.id, song.displayName, song.relativePath, song.filePath) {
-        lyrics = loadSongLyrics(context, song)
+        lyricsState = LyricsLoadState()
+        lyricsState = LyricsLoadState(
+            lines = loadSongLyrics(context, song),
+            loaded = true
+        )
     }
 
-    return lyrics
+    return lyricsState
 }
 
 private suspend fun loadSongLyrics(context: Context, song: SongSample): List<LrcLine> =
@@ -1173,6 +1609,244 @@ private suspend fun loadSongLyrics(context: Context, song: SongSample): List<Lrc
         val lyricsFile = findLyricsFile(context, song) ?: return@withContext emptyList()
         parseLrcText(readLyricsText(lyricsFile))
     }
+
+@Composable
+private fun rememberTranslatedSongLyrics(
+    song: SongSample,
+    enabled: Boolean,
+    settings: AiLyricsTranslationSettings
+): Map<Long, String> {
+    val context = LocalContext.current
+    var lyrics by remember(song.id, settings.targetLanguage, settings.apiBaseUrl, settings.modelName) {
+        mutableStateOf(emptyMap<Long, String>())
+    }
+
+    LaunchedEffect(
+        context,
+        song.id,
+        song.displayName,
+        song.relativePath,
+        song.filePath,
+        enabled,
+        settings
+    ) {
+        lyrics = if (enabled) {
+            loadOrCreateTranslatedLyrics(context, song, settings)
+                .associate { it.timeMs to it.text }
+        } else {
+            emptyMap()
+        }
+    }
+
+    return lyrics
+}
+
+private suspend fun loadOrCreateTranslatedLyrics(
+    context: Context,
+    song: SongSample,
+    settings: AiLyricsTranslationSettings
+): List<LrcLine> =
+    withContext(Dispatchers.IO) {
+        val sourceFile = findLyricsFile(context, song) ?: return@withContext emptyList()
+        val cachedFile = translatedLyricsFile(sourceFile, settings.targetLanguage)
+        if (cachedFile.exists()) {
+            return@withContext parseLrcText(readLyricsText(cachedFile))
+        }
+        val sourceLyrics = parseLrcText(readLyricsText(sourceFile))
+        if (sourceLyrics.isEmpty()) return@withContext emptyList()
+        val apiReady = settings.apiBaseUrl.isNotBlank() &&
+            settings.apiKey.isNotBlank() &&
+            settings.modelName.isNotBlank()
+        if (!apiReady) return@withContext emptyList()
+
+        val translatedLines = runCatching {
+            val folder = File(sourceFile.parentFile, "translatedLyrics")
+            folder.mkdirs()
+            sourceFile.copyTo(File(folder, sourceFile.name), overwrite = true)
+            val sourceLanguage = detectLyricsLanguage(song, sourceLyrics, settings)
+            if (sameLanguage(sourceLanguage, settings.targetLanguage)) {
+                emptyList()
+            } else {
+                val songContext = evaluateSongContext(song, sourceLyrics, sourceLanguage, settings)
+                translateLyricLines(
+                    song = song,
+                    lyrics = sourceLyrics,
+                    sourceLanguage = sourceLanguage,
+                    songContext = songContext,
+                    settings = settings
+                )
+            }
+        }.getOrDefault(emptyList())
+
+        if (translatedLines.isNotEmpty()) {
+            runCatching {
+                cachedFile.parentFile?.mkdirs()
+                cachedFile.writeText(buildLrcText(translatedLines))
+            }
+        }
+        translatedLines
+    }
+
+private suspend fun detectLyricsLanguage(
+    song: SongSample,
+    lyrics: List<LrcLine>,
+    settings: AiLyricsTranslationSettings
+): String {
+    val sampleText = lyrics.joinToString("\n") { it.text }.take(4_000)
+    return requestAiText(
+        settings = settings,
+        systemPrompt = "你只返回歌曲歌词的主要原生语言名称，不要标点，不要解释。韩语罗马音也返回韩语，日语罗马音也返回日语。",
+        userPrompt = "歌曲：${song.title}\n艺术家：${song.artist}\n歌词：\n$sampleText"
+    ).lineSequence().firstOrNull().orEmpty().trim()
+}
+
+private suspend fun evaluateSongContext(
+    song: SongSample,
+    lyrics: List<LrcLine>,
+    sourceLanguage: String,
+    settings: AiLyricsTranslationSettings
+): String {
+    val fullText = lyrics.joinToString("\n") { it.text }.take(8_000)
+    return requestAiText(
+        settings = settings,
+        systemPrompt = "你是歌词翻译前的语境分析助手。请概括歌曲叙事视角、情绪、意象、关键词、人称和翻译时应保持的语气。不要翻译整首歌。",
+        userPrompt = "歌曲：${song.title}\n艺术家：${song.artist}\n原语言：$sourceLanguage\n目标语言：${settings.targetLanguage}\n歌词：\n$fullText"
+    )
+}
+
+private suspend fun translateLyricLines(
+    song: SongSample,
+    lyrics: List<LrcLine>,
+    sourceLanguage: String,
+    songContext: String,
+    settings: AiLyricsTranslationSettings
+): List<LrcLine> =
+    coroutineScope {
+        val translated = mutableListOf<LrcLine>()
+        lyrics.chunked(6).forEach { chunk ->
+            translated += chunk.map { line ->
+                async(Dispatchers.IO) {
+                    val translatedText = requestAiText(
+                        settings = settings,
+                        systemPrompt = "你是歌词单句翻译器。只返回这一句的${settings.targetLanguage}译文，不要解释，不要引号，不要编号，不要<think>内容。保持歌曲语境、口吻和押韵感，不要生硬直译。",
+                        userPrompt = "歌曲：${song.title}\n艺术家：${song.artist}\n原语言：$sourceLanguage\n整歌语境：$songContext\n原句：${line.text}"
+                    ).lineSequence().firstOrNull().orEmpty().trim()
+                    line.copy(text = translatedText.ifBlank { line.text })
+                }
+            }.awaitAll()
+        }
+        translated
+    }
+
+private fun translatedLyricsFile(sourceFile: File, targetLanguage: String): File {
+    val folder = File(sourceFile.parentFile, "translatedLyrics")
+    val baseName = sourceFile.name.substringBeforeLast('.', sourceFile.name)
+    val languageName = targetLanguage.ifBlank { "中文" }
+        .replace(Regex("""[\\/:*?"<>|]"""), "_")
+    return File(folder, "$baseName.$languageName.lrc")
+}
+
+private fun buildLrcText(lines: List<LrcLine>): String =
+    lines.joinToString(separator = "\n") { line ->
+        "[${formatLrcTimestamp(line.timeMs)}]${line.text}"
+    }
+
+private fun formatLrcTimestamp(timeMs: Long): String {
+    val safeMs = timeMs.coerceAtLeast(0L)
+    val minutes = safeMs / 60_000L
+    val seconds = (safeMs % 60_000L) / 1_000L
+    val hundredths = (safeMs % 1_000L) / 10L
+    return minutes.toString().padStart(2, '0') +
+        ":" +
+        seconds.toString().padStart(2, '0') +
+        "." +
+        hundredths.toString().padStart(2, '0')
+}
+
+private suspend fun requestAiText(
+    settings: AiLyricsTranslationSettings,
+    systemPrompt: String,
+    userPrompt: String
+): String =
+    withContext(Dispatchers.IO) {
+        runCatching {
+            val connection = (URL(chatCompletionsUrl(settings.apiBaseUrl)).openConnection() as HttpURLConnection)
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 30_000
+            connection.readTimeout = 60_000
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer ${settings.apiKey}")
+
+            val body = JSONObject()
+                .put("model", settings.modelName)
+                .put("temperature", 0.2)
+                .put(
+                    "messages",
+                    JSONArray()
+                        .put(JSONObject().put("role", "system").put("content", systemPrompt))
+                        .put(JSONObject().put("role", "user").put("content", userPrompt))
+                )
+            connection.outputStream.use { stream ->
+                stream.write(body.toString().toByteArray(Charsets.UTF_8))
+            }
+
+            val responseCode = connection.responseCode
+            val stream = if (responseCode in 200..299) {
+                connection.inputStream
+            } else {
+                connection.errorStream
+            }
+            val responseText = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            if (responseCode !in 200..299) {
+                return@runCatching ""
+            }
+            val json = JSONObject(responseText)
+            val choices = json.optJSONArray("choices") ?: JSONArray()
+            val firstChoice = choices.optJSONObject(0) ?: JSONObject()
+            val message = firstChoice.optJSONObject("message")
+            stripAiThinking(
+                message?.optString("content")
+                    ?: firstChoice.optString("text")
+            )
+        }.getOrDefault("")
+    }
+
+private fun chatCompletionsUrl(baseUrl: String): String {
+    val trimmed = baseUrl.trim().trimEnd('/')
+    return if (trimmed.endsWith("/chat/completions")) {
+        trimmed
+    } else {
+        "$trimmed/chat/completions"
+    }
+}
+
+private fun stripAiThinking(text: String): String =
+    text
+        .replace(Regex("""<think>.*?</think>""", RegexOption.DOT_MATCHES_ALL), "")
+        .replace(Regex("""<think>.*""", RegexOption.DOT_MATCHES_ALL), "")
+        .replace(Regex("""</think>"""), "")
+        .trim()
+        .trim('"', '\'', '“', '”')
+
+private fun sameLanguage(sourceLanguage: String, targetLanguage: String): Boolean {
+    val source = normalizeLanguageName(sourceLanguage)
+    val target = normalizeLanguageName(targetLanguage)
+    return source.isNotBlank() && target.isNotBlank() && source == target
+}
+
+private fun normalizeLanguageName(language: String): String =
+    language
+        .lowercase()
+        .replace(Regex("""[\s\p{Punct}，。！？；：、（）【】《》“”‘’]+"""), "")
+        .replace("普通话", "中文")
+        .replace("汉语", "中文")
+        .replace("国语", "中文")
+        .replace("mandarin", "中文")
+        .replace("chinese", "中文")
+        .replace("korean", "韩语")
+        .replace("japanese", "日语")
+        .replace("english", "英语")
 
 private fun findLyricsFile(context: Context, song: SongSample): File? {
     val audioName = song.displayName.ifBlank {
@@ -1944,6 +2618,7 @@ private fun PlayerCardPage(
     volume: Float,
     favorite: Boolean,
     lyricsVisible: Boolean,
+    aiLyricsSettings: AiLyricsTranslationSettings,
     dismissRequestId: Int,
     onPlayingChange: (Boolean) -> Unit,
     onSeek: (Float) -> Unit,
@@ -1961,7 +2636,13 @@ private fun PlayerCardPage(
     val dragOffset = remember { Animatable(0f) }
     var lastDownwardDrag by remember { mutableFloatStateOf(0f) }
     var translationActive by rememberSaveable { mutableStateOf(false) }
-    val lyrics = rememberSongLyrics(song)
+    val lyricsState = rememberSongLyricsState(song)
+    val lyrics = lyricsState.lines
+    val translatedLyrics = rememberTranslatedSongLyrics(
+        song = song,
+        enabled = translationActive,
+        settings = aiLyricsSettings
+    )
     val lyricsProgress by animateFloatAsState(
         targetValue = if (lyricsVisible) 1f else 0f,
         animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing)
@@ -2196,6 +2877,9 @@ private fun PlayerCardPage(
                             currentPositionMs = currentPositionMs,
                             songDurationMs = song.durationMs,
                             playing = playing,
+                            translationsVisible = translationActive,
+                            translatedLyrics = translatedLyrics,
+                            lyricsLoaded = lyricsState.loaded,
                             edgePadding = lyricsPanelEdgeInset,
                             onLyricSeek = onSeek,
                             modifier = Modifier
@@ -2690,6 +3374,9 @@ private fun LyricsPanel(
     currentPositionMs: Long,
     songDurationMs: Long,
     playing: Boolean,
+    translationsVisible: Boolean,
+    translatedLyrics: Map<Long, String>,
+    lyricsLoaded: Boolean,
     edgePadding: Dp,
     onLyricSeek: (Float) -> Unit,
     modifier: Modifier = Modifier
@@ -2766,26 +3453,32 @@ private fun LyricsPanel(
                     bottomEdgeHeight = 38.dp
                 )
         ) {
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .nestedScroll(manualScrollConnection)
-                    .verticalScroll(scrollState)
-                    .padding(horizontal = edgePadding)
-                    .padding(top = activeAnchorFromTop, bottom = activeAnchorBottomPadding),
-                verticalArrangement = Arrangement.spacedBy(lineSpacing)
-            ) {
-                if (lyrics.isEmpty()) {
-                    BasicText(
-                        "暂无歌词",
-                        modifier = Modifier.fillMaxWidth(),
-                        style = TextStyle(
-                            color = Color.White.copy(alpha = 0.42f),
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Medium
+            if (lyrics.isEmpty()) {
+                if (lyricsLoaded) {
+                    Box(
+                        Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        BasicText(
+                            "暂无歌词",
+                            style = TextStyle(
+                                color = Color.White.copy(alpha = 0.32f),
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Medium
+                            )
                         )
-                    )
-                } else {
+                    }
+                }
+            } else {
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .nestedScroll(manualScrollConnection)
+                        .verticalScroll(scrollState)
+                        .padding(horizontal = edgePadding)
+                        .padding(top = activeAnchorFromTop, bottom = activeAnchorBottomPadding),
+                    verticalArrangement = Arrangement.spacedBy(lineSpacing)
+                ) {
                     lyrics.forEachIndexed { index, line ->
                         val active = index == activeIndex
                         val nextTimeMs = lyrics.getOrNull(index + 1)?.timeMs
@@ -2798,6 +3491,8 @@ private fun LyricsPanel(
                             scrolling = active && currentPositionMs >= line.timeMs,
                             durationMs = lineDurationMs,
                             elapsedMs = (currentPositionMs - line.timeMs).coerceAtLeast(0L),
+                            translation = translatedLyrics[line.timeMs].orEmpty(),
+                            translationVisible = translationsVisible,
                             activeLineShiftPx = activeLineShiftPx,
                             onClick = {
                                 val seekDurationMs = max(
@@ -2829,6 +3524,8 @@ private fun LyricsMarqueeLine(
     scrolling: Boolean,
     durationMs: Long,
     elapsedMs: Long,
+    translation: String,
+    translationVisible: Boolean,
     activeLineShiftPx: Float,
     onClick: () -> Unit,
     onHeightMeasured: (Int) -> Unit,
@@ -2857,6 +3554,10 @@ private fun LyricsMarqueeLine(
         )
         val lineShift by animateFloatAsState(
             targetValue = if (active) activeLineShiftPx else 0f,
+            animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
+        )
+        val translationProgress by animateFloatAsState(
+            targetValue = if (translationVisible && translation.isNotBlank()) 1f else 0f,
             animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
         )
         val verticalPadding = if (active && hiddenDistancePx > 1f) {
@@ -2914,29 +3615,57 @@ private fun LyricsMarqueeLine(
                 )
                 .padding(vertical = verticalPadding)
         ) {
-            BasicText(
-                text,
+            Column(
                 modifier = Modifier
                     .graphicsLayer {
                         translationX = leftInsetPx + marqueeOffset.value + lineShift
                         scaleX = lineScale
                         scaleY = lineScale
                         transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
+                    }
+            ) {
+                BasicText(
+                    text,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Visible,
+                    onTextLayout = { result ->
+                        lineWidthPx = if (result.lineCount > 0) result.getLineRight(0) else 0f
                     },
-                maxLines = 1,
-                softWrap = false,
-                overflow = TextOverflow.Visible,
-                onTextLayout = { result ->
-                    lineWidthPx = if (result.lineCount > 0) result.getLineRight(0) else 0f
-                },
-                style = TextStyle(
-                    color = Color.White.copy(alpha = if (active) 0.92f else 0.44f),
-                    fontSize = 16.sp,
-                    lineHeight = 34.sp,
-                    fontFamily = FontFamily.SansSerif,
-                    fontWeight = FontWeight.Bold
+                    style = TextStyle(
+                        color = Color.White.copy(alpha = if (active) 0.92f else 0.44f),
+                        fontSize = 16.sp,
+                        lineHeight = 34.sp,
+                        fontFamily = FontFamily.SansSerif,
+                        fontWeight = FontWeight.Bold
+                    )
                 )
-            )
+                if (translation.isNotBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .height(17.dp * translationProgress)
+                            .clipToBounds()
+                            .graphicsLayer {
+                                alpha = translationProgress * if (active) 0.72f else 0.46f
+                                translationY = (1f - translationProgress) * -4.dp.toPx()
+                            }
+                            .padding(top = 2.dp * translationProgress)
+                    ) {
+                        BasicText(
+                            translation,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = TextStyle(
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp,
+                                fontFamily = FontFamily.SansSerif,
+                                fontWeight = FontWeight.Bold
+                            )
+                        )
+                    }
+                }
+            }
         }
     }
 }
