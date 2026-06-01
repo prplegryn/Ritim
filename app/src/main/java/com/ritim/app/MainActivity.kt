@@ -5,6 +5,7 @@ import android.content.ContentUris
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.media.AudioAttributes
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.net.Uri
@@ -267,48 +268,38 @@ private fun AudioPlaybackEffect(
             return@LaunchedEffect
         }
 
-        val player = MediaPlayer()
+        val player = createMediaPlayer(context, uri)
+        if (player == null) {
+            playerHolder.value = null
+            preparedSongId = null
+            onPlayingChange(false)
+            onProgressChange(0f)
+            return@LaunchedEffect
+        }
+
         playerHolder.value = player
         preparedSongId = song.id
+        player.setOnCompletionListener { completedPlayer ->
+            scope.launch {
+                runCatching { completedPlayer.seekTo(0) }
+                onProgressChange(0f)
+                onPlayingChange(false)
+            }
+        }
+        player.setOnErrorListener { failedPlayer, _, _ ->
+            scope.launch {
+                failedPlayer.release()
+                if (playerHolder.value === failedPlayer) {
+                    playerHolder.value = null
+                }
+                preparedSongId = null
+                onProgressChange(0f)
+                onPlayingChange(false)
+            }
+            true
+        }
         runCatching {
-            player.setDataSource(context, uri)
-            player.setOnPreparedListener { preparedPlayer ->
-                scope.launch {
-                    if (preparedSongId == song.id && playing) {
-                        runCatching {
-                            preparedPlayer.start()
-                        }.onFailure {
-                            preparedPlayer.release()
-                            if (playerHolder.value === preparedPlayer) {
-                                playerHolder.value = null
-                            }
-                            preparedSongId = null
-                            onPlayingChange(false)
-                            onProgressChange(0f)
-                        }
-                    }
-                }
-            }
-            player.setOnCompletionListener { completedPlayer ->
-                scope.launch {
-                    runCatching { completedPlayer.seekTo(0) }
-                    onProgressChange(0f)
-                    onPlayingChange(false)
-                }
-            }
-            player.setOnErrorListener { failedPlayer, _, _ ->
-                scope.launch {
-                    failedPlayer.release()
-                    if (playerHolder.value === failedPlayer) {
-                        playerHolder.value = null
-                    }
-                    preparedSongId = null
-                    onProgressChange(0f)
-                    onPlayingChange(false)
-                }
-                true
-            }
-            player.prepareAsync()
+            player.start()
         }.onFailure {
             player.release()
             playerHolder.value = null
@@ -331,6 +322,46 @@ private fun AudioPlaybackEffect(
             onProgressChange(progress.coerceIn(0f, 1f))
             delay(300)
         }
+    }
+}
+
+private suspend fun createMediaPlayer(context: Context, uri: Uri): MediaPlayer? =
+    withContext(Dispatchers.IO) {
+        createPreparedMediaPlayer {
+            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { descriptor ->
+                val length = descriptor.length
+                if (length >= 0L) {
+                    setDataSource(
+                        descriptor.fileDescriptor,
+                        descriptor.startOffset,
+                        length
+                    )
+                } else {
+                    setDataSource(descriptor.fileDescriptor)
+                }
+                prepare()
+            }
+                ?: error("Unable to open audio descriptor")
+        } ?: createPreparedMediaPlayer {
+            setDataSource(context, uri)
+            prepare()
+        }
+    }
+
+private fun createPreparedMediaPlayer(prepareBlock: MediaPlayer.() -> Unit): MediaPlayer? {
+    val player = MediaPlayer()
+    return runCatching {
+        player.setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build()
+        )
+        player.prepareBlock()
+        player
+    }.getOrElse {
+        player.release()
+        null
     }
 }
 
@@ -598,7 +629,8 @@ private fun SongCoverArt(
     cornerRadius: Dp = 10.dp,
     generatedFallback: Boolean = true
 ) {
-    val image = rememberSongCover(song)
+    val cover = rememberSongCover(song)
+    val image = cover.image
     Box(
         modifier
             .clip(RoundedCornerShape(cornerRadius))
@@ -611,7 +643,7 @@ private fun SongCoverArt(
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
             )
-        } else if (generatedFallback) {
+        } else if (generatedFallback && (cover.loaded || song.contentUri == null)) {
             CoverArt(
                 colors = song.colors,
                 seed = song.seed,
@@ -703,11 +735,21 @@ private data class SongSample(
 private val coverImageCache = mutableMapOf<Long, ImageBitmap?>()
 private val albumArtBaseUri: Uri = Uri.parse("content://media/external/audio/albumart")
 
+private data class CoverImageState(
+    val image: ImageBitmap?,
+    val loaded: Boolean
+)
+
 @Composable
-private fun rememberSongCover(song: SongSample): ImageBitmap? {
+private fun rememberSongCover(song: SongSample): CoverImageState {
     val context = LocalContext.current
-    var image by remember(song.id) {
-        mutableStateOf(cachedCoverImage(song.id))
+    var coverState by remember(song.id) {
+        mutableStateOf(
+            CoverImageState(
+                image = cachedCoverImage(song.id),
+                loaded = hasCachedCoverImage(song.id)
+            )
+        )
     }
 
     LaunchedEffect(context, song.id, song.contentUri) {
@@ -720,13 +762,16 @@ private fun rememberSongCover(song: SongSample): ImageBitmap? {
             synchronized(coverImageCache) {
                 coverImageCache[song.id] = loadedImage
             }
-            image = loadedImage
+            coverState = CoverImageState(image = loadedImage, loaded = true)
         } else {
-            image = cachedCoverImage(song.id)
+            coverState = CoverImageState(
+                image = cachedCoverImage(song.id),
+                loaded = true
+            )
         }
     }
 
-    return image
+    return coverState
 }
 
 private fun hasCachedCoverImage(songId: Long): Boolean =
@@ -1556,7 +1601,8 @@ private fun SolidCoverArt(
     song: SongSample,
     modifier: Modifier = Modifier
 ) {
-    val image = rememberSongCover(song)
+    val cover = rememberSongCover(song)
+    val image = cover.image
     Box(modifier.background(song.colors.first())) {
         if (image != null) {
             Image(
@@ -1574,7 +1620,8 @@ private fun CoverColorField(
     song: SongSample,
     modifier: Modifier = Modifier
 ) {
-    val image = rememberSongCover(song)
+    val cover = rememberSongCover(song)
+    val image = cover.image
     if (image != null) {
         Image(
             bitmap = image,
