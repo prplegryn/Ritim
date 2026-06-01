@@ -89,6 +89,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -2185,7 +2188,9 @@ private fun PlayerCardPage(
                         activeIndex = activeLyricIndex,
                         currentPositionMs = currentPositionMs,
                         songDurationMs = song.durationMs,
+                        playing = playing,
                         edgePadding = lyricsPanelEdgeInset,
+                        onLyricSeek = onSeek,
                         modifier = Modifier
                             .align(Alignment.BottomStart)
                             .fillMaxWidth()
@@ -2516,9 +2521,10 @@ private fun TranslationPillButton(
                 if (selected) {
                     Color.White
                 } else {
-                    Color.Transparent
+                    Color.White.copy(alpha = 0.13f)
                 }
             )
+            .semantics { contentDescription = "翻译" }
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
@@ -2529,7 +2535,7 @@ private fun TranslationPillButton(
     ) {
         TranslationGlyph(
             modifier = Modifier.size(20.dp),
-            color = if (selected) Color(0xFF111315) else Color.White.copy(alpha = 0.78f)
+            color = if (selected) Color(0xFF111315) else Color.White.copy(alpha = 0.86f)
         )
     }
 }
@@ -2539,43 +2545,62 @@ private fun TranslationGlyph(
     modifier: Modifier = Modifier,
     color: Color = Color.White
 ) {
-    Canvas(modifier) {
-        val strokeWidth = 1.7.dp.toPx()
-        val corner = CornerRadius(3.5.dp.toPx(), 3.5.dp.toPx())
-        drawRoundRect(
-            color = color,
-            topLeft = Offset(size.width * 0.12f, size.height * 0.18f),
-            size = Size(size.width * 0.50f, size.height * 0.46f),
-            cornerRadius = corner,
-            style = Stroke(width = strokeWidth)
+    Box(modifier) {
+        Canvas(Modifier.fillMaxSize()) {
+            val strokeWidth = 1.45.dp.toPx()
+            val corner = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+            drawRoundRect(
+                color = color.copy(alpha = 0.92f),
+                topLeft = Offset(size.width * 0.08f, size.height * 0.16f),
+                size = Size(size.width * 0.58f, size.height * 0.48f),
+                cornerRadius = corner,
+                style = Stroke(width = strokeWidth)
+            )
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(size.width * 0.34f, size.height * 0.36f),
+                size = Size(size.width * 0.58f, size.height * 0.48f),
+                cornerRadius = corner,
+                style = Stroke(width = strokeWidth)
+            )
+            drawLine(
+                color = color,
+                start = Offset(size.width * 0.23f, size.height * 0.67f),
+                end = Offset(size.width * 0.33f, size.height * 0.58f),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round
+            )
+            drawLine(
+                color = color,
+                start = Offset(size.width * 0.73f, size.height * 0.84f),
+                end = Offset(size.width * 0.62f, size.height * 0.74f),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round
+            )
+        }
+        BasicText(
+            "A",
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .offset(x = 5.dp, y = 2.dp),
+            style = TextStyle(
+                color = color,
+                fontSize = 8.sp,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Bold
+            )
         )
-        drawRoundRect(
-            color = color,
-            topLeft = Offset(size.width * 0.38f, size.height * 0.36f),
-            size = Size(size.width * 0.50f, size.height * 0.46f),
-            cornerRadius = corner,
-            style = Stroke(width = strokeWidth)
-        )
-        drawLine(
-            color = color,
-            start = Offset(size.width * 0.23f, size.height * 0.36f),
-            end = Offset(size.width * 0.52f, size.height * 0.36f),
-            strokeWidth = strokeWidth,
-            cap = StrokeCap.Round
-        )
-        drawLine(
-            color = color,
-            start = Offset(size.width * 0.52f, size.height * 0.58f),
-            end = Offset(size.width * 0.75f, size.height * 0.58f),
-            strokeWidth = strokeWidth,
-            cap = StrokeCap.Round
-        )
-        drawLine(
-            color = color,
-            start = Offset(size.width * 0.62f, size.height * 0.48f),
-            end = Offset(size.width * 0.68f, size.height * 0.70f),
-            strokeWidth = strokeWidth,
-            cap = StrokeCap.Round
+        BasicText(
+            "文",
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .offset(x = (-3).dp, y = (-1).dp),
+            style = TextStyle(
+                color = color,
+                fontSize = 8.sp,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Bold
+            )
         )
     }
 }
@@ -2656,42 +2681,73 @@ private fun LyricsPanel(
     activeIndex: Int,
     currentPositionMs: Long,
     songDurationMs: Long,
+    playing: Boolean,
     edgePadding: Dp,
+    onLyricSeek: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
     BoxWithConstraints(modifier.clipToBounds()) {
         val scrollState = rememberScrollState()
+        val scope = rememberCoroutineScope()
         val density = LocalDensity.current
         val viewportHeightPx = constraints.maxHeight
         val activeAnchorFromTop = maxHeight * 0.35f
         val activeAnchorBottomPadding = maxHeight - activeAnchorFromTop
         val lineSpacing = 12.dp
         val activeLineShiftPx = with(density) { -3.dp.toPx() }
+        var userScrollSuspended by remember { mutableStateOf(false) }
+        var userScrollRequest by remember { mutableIntStateOf(0) }
         val lineHeights = remember(lyrics) {
             mutableStateListOf<Int>().apply {
                 repeat(lyrics.size) { add(0) }
             }
         }
         val lineHeightsTotal = lineHeights.sum()
+        val manualScrollConnection = remember {
+            object : NestedScrollConnection {
+                override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                    if (source == NestedScrollSource.UserInput && available.y != 0f) {
+                        userScrollSuspended = true
+                        userScrollRequest += 1
+                    }
+                    return Offset.Zero
+                }
+            }
+        }
+        fun scrollTargetForIndex(index: Int): Int {
+            if (lyrics.isEmpty()) {
+                return 0
+            }
+            val targetIndex = index.coerceIn(0, lyrics.lastIndex)
+            val spacingPx = with(density) { lineSpacing.toPx().roundToInt() }
+            val activeTop = lineHeights
+                .take(targetIndex)
+                .sum() + spacingPx * targetIndex
+            val activeHeight = lineHeights
+                .getOrNull(targetIndex)
+                ?.takeIf { it > 0 }
+                ?: with(density) { 52.dp.toPx().roundToInt() }
+            return (activeTop + activeHeight / 2).coerceIn(0, scrollState.maxValue)
+        }
 
         LaunchedEffect(
             lyrics.size,
             activeIndex,
             scrollState.maxValue,
             viewportHeightPx,
-            lineHeightsTotal
+            lineHeightsTotal,
+            userScrollSuspended
         ) {
-            if (lyrics.isNotEmpty()) {
-                val spacingPx = with(density) { lineSpacing.toPx().roundToInt() }
-                val activeTop = lineHeights
-                    .take(activeIndex)
-                    .sum() + spacingPx * activeIndex
-                val activeHeight = lineHeights
-                    .getOrNull(activeIndex)
-                    ?.takeIf { it > 0 }
-                    ?: with(density) { 52.dp.toPx().roundToInt() }
-                val target = activeTop + activeHeight / 2
-                scrollState.animateScrollTo(target.coerceIn(0, scrollState.maxValue))
+            if (lyrics.isNotEmpty() && !userScrollSuspended) {
+                scrollState.animateScrollTo(scrollTargetForIndex(activeIndex))
+            }
+        }
+
+        LaunchedEffect(userScrollRequest, playing) {
+            if (userScrollRequest > 0 && playing) {
+                delay(3_000)
+                userScrollSuspended = false
+                scrollState.animateScrollTo(scrollTargetForIndex(activeIndex))
             }
         }
 
@@ -2706,6 +2762,7 @@ private fun LyricsPanel(
             Column(
                 Modifier
                     .fillMaxSize()
+                    .nestedScroll(manualScrollConnection)
                     .verticalScroll(scrollState)
                     .padding(horizontal = edgePadding)
                     .padding(top = activeAnchorFromTop, bottom = activeAnchorBottomPadding),
@@ -2735,6 +2792,18 @@ private fun LyricsPanel(
                             durationMs = lineDurationMs,
                             elapsedMs = (currentPositionMs - line.timeMs).coerceAtLeast(0L),
                             activeLineShiftPx = activeLineShiftPx,
+                            onClick = {
+                                val seekDurationMs = max(
+                                    1L,
+                                    songDurationMs.takeIf { it > 0L }
+                                        ?: ((lyrics.lastOrNull()?.timeMs ?: line.timeMs) + 1_000L)
+                                )
+                                userScrollSuspended = false
+                                onLyricSeek((line.timeMs.toFloat() / seekDurationMs.toFloat()).coerceIn(0f, 1f))
+                                scope.launch {
+                                    scrollState.animateScrollTo(scrollTargetForIndex(index))
+                                }
+                            },
                             onHeightMeasured = { height ->
                                 if (lineHeights.getOrNull(index) != height) {
                                     lineHeights[index] = height
@@ -2756,6 +2825,7 @@ private fun LyricsMarqueeLine(
     durationMs: Long,
     elapsedMs: Long,
     activeLineShiftPx: Float,
+    onClick: () -> Unit,
     onHeightMeasured: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -2785,6 +2855,13 @@ private fun LyricsMarqueeLine(
             targetValue = if (active) activeLineShiftPx else 0f,
             animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
         )
+        val verticalPadding = if (active && hiddenDistancePx > 1f) {
+            22.dp
+        } else if (active) {
+            14.dp
+        } else {
+            6.dp
+        }
 
         LaunchedEffect(scrolling, text, hiddenDistancePx, durationMs) {
             if (scrolling && hiddenDistancePx > 1f) {
@@ -2815,7 +2892,13 @@ private fun LyricsMarqueeLine(
         Box(
             Modifier
                 .fillMaxWidth()
-                .padding(vertical = if (active) 14.dp else 6.dp)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    role = Role.Button,
+                    onClick = onClick
+                )
+                .padding(vertical = verticalPadding)
                 .then(
                     if (hiddenDistancePx > 1f) {
                         Modifier.lyricsHorizontalFade(
