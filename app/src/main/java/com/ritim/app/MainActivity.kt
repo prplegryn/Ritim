@@ -128,6 +128,8 @@ private const val previousRestartThresholdMs = 3_000L
 
 @Composable
 fun RitimApp() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val pageBackground = Color(0xFFF4F7F8)
     val backdrop = rememberLayerBackdrop {
         drawRect(pageBackground)
@@ -143,8 +145,25 @@ fun RitimApp() {
     val playbackRuntimeTracker = remember { PlaybackRuntimeTracker() }
     var seekRequestId by remember { mutableIntStateOf(0) }
     var seekRequest by remember { mutableStateOf<SeekRequest?>(null) }
+    var favoriteSongIds by remember(context) {
+        mutableStateOf(loadMusicLibraryIndex(context).favoriteSongIds)
+    }
     val currentSong = remember(displaySongs, selectedSongId) {
         displaySongs.firstOrNull { it.id == selectedSongId } ?: displaySongs.first()
+    }
+    val toggleFavorite: (SongSample) -> Unit = { song ->
+        val nextFavorites = favoriteSongIds.toMutableSet().apply {
+            if (!add(song.id)) {
+                remove(song.id)
+            }
+        }.toSet()
+        favoriteSongIds = nextFavorites
+        scope.launch {
+            saveMusicLibraryIndex(
+                context = context,
+                index = MusicLibraryIndex(favoriteSongIds = nextFavorites)
+            )
+        }
     }
     val requestSeek: (Float) -> Unit = { progress ->
         val coercedProgress = progress.coerceIn(0f, 1f)
@@ -243,8 +262,10 @@ fun RitimApp() {
                 song = currentSong,
                 playing = playing,
                 playbackProgress = playbackProgress,
+                favorite = favoriteSongIds.contains(currentSong.id),
                 onPlayingChange = { playing = it },
                 onSeek = requestSeek,
+                onFavoriteToggle = { toggleFavorite(currentSong) },
                 onPrevious = onPreviousSelected,
                 onNext = { selectRelativeSong(1) },
                 onBackdropProgressChange = { playerBackdropProgress = it },
@@ -819,6 +840,10 @@ private data class SongSample(
     val contentUri: Uri? = null
 )
 
+private data class MusicLibraryIndex(
+    val favoriteSongIds: Set<Long> = emptySet()
+)
+
 private val coverImageCache = mutableMapOf<Long, ImageBitmap?>()
 private val albumArtBaseUri: Uri = Uri.parse("content://media/external/audio/albumart")
 
@@ -1001,6 +1026,34 @@ private fun loadCachedMusicIndex(context: Context): List<SongSample> =
 
 private fun musicIndexFile(context: Context): File =
     File(context.filesDir, "music_index.json")
+
+private suspend fun saveMusicLibraryIndex(context: Context, index: MusicLibraryIndex) =
+    withContext(Dispatchers.IO) {
+        runCatching {
+            val favorites = JSONArray()
+            index.favoriteSongIds.sorted().forEach { songId ->
+                favorites.put(songId)
+            }
+            val json = JSONObject().put("favorites", favorites)
+            musicLibraryIndexFile(context).writeText(json.toString())
+        }
+    }
+
+private fun loadMusicLibraryIndex(context: Context): MusicLibraryIndex =
+    runCatching {
+        val file = musicLibraryIndexFile(context)
+        if (!file.exists()) return@runCatching MusicLibraryIndex()
+        val json = JSONObject(file.readText())
+        val favorites = mutableSetOf<Long>()
+        val favoriteArray = json.optJSONArray("favorites") ?: JSONArray()
+        for (index in 0 until favoriteArray.length()) {
+            favorites.add(favoriteArray.optLong(index))
+        }
+        MusicLibraryIndex(favoriteSongIds = favorites)
+    }.getOrDefault(MusicLibraryIndex())
+
+private fun musicLibraryIndexFile(context: Context): File =
+    File(context.filesDir, "music_library_index.json")
 
 @Composable
 private fun rememberMusicFolderSongs(): List<SongSample> {
@@ -1546,8 +1599,10 @@ private fun PlayerCardPage(
     song: SongSample,
     playing: Boolean,
     playbackProgress: Float,
+    favorite: Boolean,
     onPlayingChange: (Boolean) -> Unit,
     onSeek: (Float) -> Unit,
+    onFavoriteToggle: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onBackdropProgressChange: (Float) -> Unit,
@@ -1617,7 +1672,7 @@ private fun PlayerCardPage(
                     .statusBarsPadding()
                     .navigationBarsPadding()
                     .padding(horizontal = 28.dp)
-                    .padding(top = 14.dp, bottom = if (compactPlayerLayout) 26.dp else 30.dp),
+                    .padding(top = 14.dp, bottom = if (compactPlayerLayout) 22.dp else 26.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Box(
@@ -1643,11 +1698,18 @@ private fun PlayerCardPage(
                     verticalArrangement = Arrangement.SpaceEvenly,
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    ScrubbablePlayerLine(
+                    PlayerSongInfoRow(
+                        song = song,
+                        favorite = favorite,
+                        onFavoriteToggle = onFavoriteToggle,
+                        modifier = Modifier.width(coverSize)
+                    )
+
+                    PlayerTimeline(
                         progress = playbackProgress,
+                        durationMs = song.durationMs,
                         onSeek = onSeek,
-                        modifier = Modifier.fillMaxWidth(),
-                        height = 4.dp
+                        modifier = Modifier.width(coverSize)
                     )
 
                     Row(
@@ -1866,6 +1928,132 @@ private fun CoverColorField(
 }
 
 @Composable
+private fun PlayerSongInfoRow(
+    song: SongSample,
+    favorite: Boolean,
+    onFavoriteToggle: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier.height(46.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            Modifier
+                .weight(1f)
+                .height(40.dp),
+            verticalArrangement = Arrangement.Center
+        ) {
+            BasicText(
+                song.title,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = TextStyle(
+                    color = Color.White,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            )
+            Spacer(Modifier.height(3.dp))
+            BasicText(
+                song.artist,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = TextStyle(
+                    color = Color.White.copy(alpha = 0.62f),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Normal
+                )
+            )
+        }
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(0.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            PlayerIconButton(
+                contentDescription = if (favorite) "取消收藏" else "收藏",
+                size = 42.dp,
+                onClick = onFavoriteToggle,
+                pressScale = 0.96f
+            ) {
+                StarGlyph(
+                    filled = favorite,
+                    modifier = Modifier.size(24.dp),
+                    color = Color.White
+                )
+            }
+            PlayerIconButton(
+                contentDescription = "更多",
+                size = 38.dp,
+                onClick = {},
+                pressScale = 0.96f
+            ) {
+                MoreGlyph(
+                    modifier = Modifier.size(22.dp),
+                    color = Color.White
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlayerTimeline(
+    progress: Float,
+    durationMs: Long,
+    onSeek: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val totalMs = durationMs.coerceAtLeast(0L)
+    val remainingMs = (totalMs - (totalMs * progress.coerceIn(0f, 1f)).toLong())
+        .coerceAtLeast(0L)
+    Column(modifier) {
+        ScrubbablePlayerLine(
+            progress = progress,
+            onSeek = onSeek,
+            modifier = Modifier.fillMaxWidth(),
+            height = 4.dp
+        )
+        Spacer(Modifier.height(4.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            PlayerTimeText("-${formatPlaybackDuration(remainingMs)}")
+            PlayerTimeText(formatPlaybackDuration(totalMs))
+        }
+    }
+}
+
+@Composable
+private fun PlayerTimeText(text: String) {
+    BasicText(
+        text,
+        maxLines = 1,
+        style = TextStyle(
+            color = Color.White.copy(alpha = 0.52f),
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium
+        )
+    )
+}
+
+private fun formatPlaybackDuration(durationMs: Long): String {
+    val totalSeconds = (durationMs / 1000L).coerceAtLeast(0L)
+    val hours = totalSeconds / 3600L
+    val minutes = (totalSeconds % 3600L) / 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0L) {
+        "$hours:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}"
+    } else {
+        "$minutes:${seconds.toString().padStart(2, '0')}"
+    }
+}
+
+@Composable
 private fun ScrubbablePlayerLine(
     progress: Float,
     onSeek: (Float) -> Unit,
@@ -1982,6 +2170,55 @@ private fun PlayerIconButton(
         contentAlignment = Alignment.Center
     ) {
         content()
+    }
+}
+
+@Composable
+private fun StarGlyph(
+    filled: Boolean,
+    modifier: Modifier = Modifier,
+    color: Color = Color.White
+) {
+    Canvas(modifier) {
+        val path = Path().apply {
+            moveTo(size.width * 0.50f, size.height * 0.12f)
+            lineTo(size.width * 0.61f, size.height * 0.38f)
+            lineTo(size.width * 0.89f, size.height * 0.40f)
+            lineTo(size.width * 0.68f, size.height * 0.58f)
+            lineTo(size.width * 0.75f, size.height * 0.86f)
+            lineTo(size.width * 0.50f, size.height * 0.71f)
+            lineTo(size.width * 0.25f, size.height * 0.86f)
+            lineTo(size.width * 0.32f, size.height * 0.58f)
+            lineTo(size.width * 0.11f, size.height * 0.40f)
+            lineTo(size.width * 0.39f, size.height * 0.38f)
+            close()
+        }
+        if (filled) {
+            drawPath(path, color)
+        } else {
+            drawPath(
+                path = path,
+                color = color,
+                style = Stroke(width = 2.1.dp.toPx(), cap = StrokeCap.Round)
+            )
+        }
+    }
+}
+
+@Composable
+private fun MoreGlyph(
+    modifier: Modifier = Modifier,
+    color: Color = Color.White
+) {
+    Canvas(modifier) {
+        val radius = size.minDimension * 0.085f
+        listOf(0.26f, 0.50f, 0.74f).forEach { x ->
+            drawCircle(
+                color = color,
+                radius = radius,
+                center = Offset(size.width * x, size.height * 0.50f)
+            )
+        }
     }
 }
 
