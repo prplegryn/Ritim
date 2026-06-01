@@ -1944,9 +1944,16 @@ private fun PlayerCardPage(
         val mainControlIconSize = if (compactPlayerLayout) 56.dp else 64.dp
         val controlSpacer = if (compactPlayerLayout) 14.dp else 18.dp
         val coverLift = if (compactPlayerLayout) 6.dp else 10.dp
+        val controlsTopPadding = if (compactPlayerLayout) 10.dp else 14.dp
         val lyricsSpacing = 20.dp
         val lyricsCoverScale = if (compactPlayerLayout) 0.20f else 0.18f
         val lyricsCoverSize = coverSize * lyricsCoverScale
+        val naturalLyricsBottomGap = coverLift + controlsTopPadding
+        val lyricsPanelBottomExtension = if (naturalLyricsBottomGap > lyricsSpacing) {
+            naturalLyricsBottomGap - lyricsSpacing
+        } else {
+            0.dp
+        }
         val coverTranslationXPx = with(density) {
             12.dp.toPx() * lyricsProgress
         }
@@ -2101,23 +2108,19 @@ private fun PlayerCardPage(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
                             .fillMaxWidth()
-                            .height(coverSize - lyricsCoverSize - lyricsSpacing)
+                            .height(coverSize - lyricsCoverSize - lyricsSpacing + lyricsPanelBottomExtension)
                             .graphicsLayer { alpha = lyricsProgress }
                     )
                 }
 
-                Spacer(Modifier.height(if (lyricsVisible) lyricsSpacing else coverLift))
+                Spacer(Modifier.height(coverLift))
 
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                        .padding(top = if (lyricsVisible) 0.dp else if (compactPlayerLayout) 10.dp else 14.dp),
-                    verticalArrangement = if (lyricsVisible) {
-                        Arrangement.spacedBy(lyricsSpacing)
-                    } else {
-                        Arrangement.SpaceBetween
-                    },
+                        .padding(top = controlsTopPadding),
+                    verticalArrangement = Arrangement.SpaceBetween,
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Column(
@@ -2126,23 +2129,14 @@ private fun PlayerCardPage(
                             .offset(y = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        if (lyricsProgress < 0.995f) {
-                            Box(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .height(42.dp * (1f - lyricsProgress))
-                                    .clipToBounds()
-                            ) {
-                                PlayerSongInfoRow(
-                                    song = song,
-                                    favorite = favorite,
-                                    onFavoriteToggle = onFavoriteToggle,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .graphicsLayer { alpha = 1f - lyricsProgress }
-                                )
-                            }
-                        }
+                        PlayerSongInfoRow(
+                            song = song,
+                            favorite = favorite,
+                            onFavoriteToggle = onFavoriteToggle,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .graphicsLayer { alpha = 1f - lyricsProgress }
+                        )
 
                         PlayerTimeline(
                             progress = playbackProgress,
@@ -2469,8 +2463,11 @@ private fun LyricsPanel(
         val scrollState = rememberScrollState()
         val density = LocalDensity.current
         val viewportHeightPx = constraints.maxHeight
-        val centerPadding = maxHeight / 2f
+        val activeAnchorFromTop = maxHeight * 0.35f
+        val activeAnchorBottomPadding = maxHeight - activeAnchorFromTop
         val lineSpacing = 10.dp
+        val textRightInset = 50.dp
+        val activeLineShiftPx = with(density) { -3.dp.toPx() }
         val lineHeights = remember(lyrics) {
             mutableStateListOf<Int>().apply {
                 repeat(lyrics.size) { add(0) }
@@ -2502,14 +2499,14 @@ private fun LyricsPanel(
         Box(
             Modifier
                 .fillMaxSize()
-                .lyricsVerticalFade(edgeHeight = 25.dp)
+                .lyricsVerticalFade(edgeHeight = 30.dp)
         ) {
             Column(
                 Modifier
                     .fillMaxSize()
                     .verticalScroll(scrollState)
-                    .padding(horizontal = edgePadding)
-                    .padding(top = centerPadding, bottom = centerPadding),
+                    .padding(start = edgePadding, end = edgePadding + textRightInset)
+                    .padding(top = activeAnchorFromTop, bottom = activeAnchorBottomPadding),
                 verticalArrangement = Arrangement.spacedBy(lineSpacing)
             ) {
                 if (lyrics.isEmpty()) {
@@ -2529,6 +2526,10 @@ private fun LyricsPanel(
                             targetValue = if (active) 1.3f else 1f,
                             animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
                         )
+                        val lineShift by animateFloatAsState(
+                            targetValue = if (active) activeLineShiftPx else 0f,
+                            animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
+                        )
                         BasicText(
                             line.text,
                             modifier = Modifier
@@ -2541,6 +2542,7 @@ private fun LyricsPanel(
                                 .graphicsLayer {
                                     scaleX = lineScale
                                     scaleY = lineScale
+                                    translationX = lineShift
                                     transformOrigin =
                                         androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
                                 },
