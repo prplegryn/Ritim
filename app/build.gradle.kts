@@ -20,6 +20,16 @@ android {
         compose = true
     }
 
+    signingConfigs {
+        create("stableDebug") {
+            storeFile = file("signing/ritim-debug.p12")
+            storePassword = "ritimdebug"
+            keyAlias = "ritim-debug"
+            keyPassword = "ritimdebug"
+            storeType = "PKCS12"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -31,6 +41,7 @@ android {
             vcsInfo.include = false
         }
         debug {
+            signingConfig = signingConfigs.getByName("stableDebug")
             vcsInfo.include = false
         }
     }
