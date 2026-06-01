@@ -60,6 +60,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -70,11 +71,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -83,6 +87,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
@@ -92,7 +97,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -1940,7 +1944,8 @@ private fun PlayerCardPage(
         val mainControlIconSize = if (compactPlayerLayout) 56.dp else 64.dp
         val controlSpacer = if (compactPlayerLayout) 14.dp else 18.dp
         val coverLift = if (compactPlayerLayout) 6.dp else 10.dp
-        val lyricsCoverScale = if (compactPlayerLayout) 0.21f else 0.19f
+        val lyricsSpacing = 20.dp
+        val lyricsCoverScale = if (compactPlayerLayout) 0.20f else 0.18f
         val lyricsCoverSize = coverSize * lyricsCoverScale
         val coverTranslationXPx = with(density) {
             12.dp.toPx() * lyricsProgress
@@ -2096,19 +2101,23 @@ private fun PlayerCardPage(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
                             .fillMaxWidth()
-                            .height(coverSize - lyricsCoverSize + 2.dp)
+                            .height(coverSize - lyricsCoverSize - lyricsSpacing)
                             .graphicsLayer { alpha = lyricsProgress }
                     )
                 }
 
-                Spacer(Modifier.height(coverLift))
+                Spacer(Modifier.height(if (lyricsVisible) lyricsSpacing else coverLift))
 
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                        .padding(top = if (compactPlayerLayout) 10.dp else 14.dp),
-                    verticalArrangement = Arrangement.SpaceBetween,
+                        .padding(top = if (lyricsVisible) 0.dp else if (compactPlayerLayout) 10.dp else 14.dp),
+                    verticalArrangement = if (lyricsVisible) {
+                        Arrangement.spacedBy(lyricsSpacing)
+                    } else {
+                        Arrangement.SpaceBetween
+                    },
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Column(
@@ -2117,14 +2126,23 @@ private fun PlayerCardPage(
                             .offset(y = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        PlayerSongInfoRow(
-                            song = song,
-                            favorite = favorite,
-                            onFavoriteToggle = onFavoriteToggle,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .graphicsLayer { alpha = 1f - lyricsProgress }
-                        )
+                        if (lyricsProgress < 0.995f) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(42.dp * (1f - lyricsProgress))
+                                    .clipToBounds()
+                            ) {
+                                PlayerSongInfoRow(
+                                    song = song,
+                                    favorite = favorite,
+                                    onFavoriteToggle = onFavoriteToggle,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .graphicsLayer { alpha = 1f - lyricsProgress }
+                                )
+                            }
+                        }
 
                         PlayerTimeline(
                             progress = playbackProgress,
@@ -2450,106 +2468,117 @@ private fun LyricsPanel(
     BoxWithConstraints(modifier.clipToBounds()) {
         val scrollState = rememberScrollState()
         val density = LocalDensity.current
-        val centerPadding = if (maxHeight > 42.dp) {
-            maxHeight / 2f - 18.dp
-        } else {
-            0.dp
+        val viewportHeightPx = constraints.maxHeight
+        val centerPadding = maxHeight / 2f
+        val lineSpacing = 10.dp
+        val lineHeights = remember(lyrics) {
+            mutableStateListOf<Int>().apply {
+                repeat(lyrics.size) { add(0) }
+            }
         }
-        val lineStep = 40.dp
+        val lineHeightsTotal = lineHeights.sum()
 
-        LaunchedEffect(lyrics.size, activeIndex, maxHeight, scrollState.maxValue) {
+        LaunchedEffect(
+            lyrics.size,
+            activeIndex,
+            scrollState.maxValue,
+            viewportHeightPx,
+            lineHeightsTotal
+        ) {
             if (lyrics.isNotEmpty()) {
-                scrollState.animateScrollTo(
-                    with(density) {
-                        (lineStep * activeIndex.toFloat()).toPx().roundToInt()
-                    }.coerceIn(0, scrollState.maxValue)
-                )
+                val spacingPx = with(density) { lineSpacing.toPx().roundToInt() }
+                val activeTop = lineHeights
+                    .take(activeIndex)
+                    .sum() + spacingPx * activeIndex
+                val activeHeight = lineHeights
+                    .getOrNull(activeIndex)
+                    ?.takeIf { it > 0 }
+                    ?: with(density) { 28.dp.toPx().roundToInt() }
+                val target = activeTop + activeHeight / 2
+                scrollState.animateScrollTo(target.coerceIn(0, scrollState.maxValue))
             }
         }
 
-        Column(
+        Box(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(scrollState)
-                .padding(horizontal = edgePadding)
-                .padding(top = centerPadding, bottom = centerPadding + 20.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .lyricsVerticalFade(edgeHeight = 25.dp)
         ) {
-            if (lyrics.isEmpty()) {
-                BasicText(
-                    "暂无歌词",
-                    modifier = Modifier.fillMaxWidth(),
-                    style = TextStyle(
-                        color = Color.White.copy(alpha = 0.42f),
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium,
-                        textAlign = TextAlign.Start
-                    )
-                )
-            } else {
-                lyrics.forEachIndexed { index, line ->
-                    val active = index == activeIndex
-                    val lineScale by animateFloatAsState(
-                        targetValue = if (active) 1.3f else 1f,
-                        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
-                    )
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scrollState)
+                    .padding(horizontal = edgePadding)
+                    .padding(top = centerPadding, bottom = centerPadding),
+                verticalArrangement = Arrangement.spacedBy(lineSpacing)
+            ) {
+                if (lyrics.isEmpty()) {
                     BasicText(
-                        line.text,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .graphicsLayer {
-                                scaleX = lineScale
-                                scaleY = lineScale
-                            },
+                        "暂无歌词",
+                        modifier = Modifier.fillMaxWidth(),
                         style = TextStyle(
-                            color = Color.White.copy(alpha = if (active) 0.92f else 0.44f),
+                            color = Color.White.copy(alpha = 0.42f),
                             fontSize = 16.sp,
-                            lineHeight = 28.sp,
-                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
-                            textAlign = if (active) TextAlign.Center else TextAlign.Start
+                            fontWeight = FontWeight.Medium
                         )
                     )
+                } else {
+                    lyrics.forEachIndexed { index, line ->
+                        val active = index == activeIndex
+                        val lineScale by animateFloatAsState(
+                            targetValue = if (active) 1.3f else 1f,
+                            animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
+                        )
+                        BasicText(
+                            line.text,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onSizeChanged { size ->
+                                    if (lineHeights.getOrNull(index) != size.height) {
+                                        lineHeights[index] = size.height
+                                    }
+                                }
+                                .graphicsLayer {
+                                    scaleX = lineScale
+                                    scaleY = lineScale
+                                    transformOrigin =
+                                        androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
+                                },
+                            style = TextStyle(
+                                color = Color.White.copy(alpha = if (active) 0.92f else 0.44f),
+                                fontSize = 16.sp,
+                                lineHeight = 28.sp,
+                                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium
+                            )
+                        )
+                    }
                 }
             }
         }
-
-        LyricsEdgeFade(
-            top = true,
-            modifier = Modifier.align(Alignment.TopCenter)
-        )
-        LyricsEdgeFade(
-            top = false,
-            modifier = Modifier.align(Alignment.BottomCenter)
-        )
     }
 }
 
-@Composable
-private fun LyricsEdgeFade(
-    top: Boolean,
-    modifier: Modifier = Modifier
-) {
-    val colors = if (top) {
-        listOf(
-            Color.Black.copy(alpha = 0.62f),
-            Color.Black.copy(alpha = 0.22f),
-            Color.Transparent
-        )
-    } else {
-        listOf(
-            Color.Transparent,
-            Color.Black.copy(alpha = 0.22f),
-            Color.Black.copy(alpha = 0.62f)
-        )
+private fun Modifier.lyricsVerticalFade(edgeHeight: Dp): Modifier =
+    graphicsLayer {
+        compositingStrategy = CompositingStrategy.Offscreen
+    }.drawWithContent {
+        drawContent()
+        val edgePx = edgeHeight.toPx().coerceAtMost(size.height / 2f)
+        if (edgePx > 0f && size.height > 0f) {
+            val edgeStop = edgePx / size.height
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0f to Color.Transparent,
+                        edgeStop to Color.Black,
+                        (1f - edgeStop) to Color.Black,
+                        1f to Color.Transparent
+                    )
+                ),
+                blendMode = BlendMode.DstIn
+            )
+        }
     }
-    Box(
-        modifier
-            .fillMaxWidth()
-            .height(25.dp)
-            .blur(7.dp)
-            .background(Brush.verticalGradient(colors))
-    )
-}
 
 @Composable
 private fun PlayerTimeline(
