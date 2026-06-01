@@ -43,7 +43,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -3771,13 +3770,9 @@ private fun LyricsMarqueeLine(
         )
         val lineNeedsFade = hiddenDistancePx > 1f
         val translationNeedsFade = translationHiddenDistancePx > 1f
-        val verticalPadding = if (active && (lineNeedsFade || translationNeedsFade)) {
-            30.dp
-        } else if (active) {
-            18.dp
-        } else {
-            6.dp
-        }
+        val verticalPadding = if (active) 14.dp else 6.dp
+        val mainLineHeight = if (active) 46.dp else 34.dp
+        val translationLineHeight = if (active) 25.dp else 18.dp
 
         LaunchedEffect(scrolling, text, hiddenDistancePx, durationMs) {
             if (scrolling && hiddenDistancePx > 1f) {
@@ -3844,9 +3839,9 @@ private fun LyricsMarqueeLine(
         ) {
             Column {
                 Box(
-                    Modifier
+                    modifier = Modifier
                         .fillMaxWidth()
-                        .then(if (active && lineNeedsFade) Modifier.heightIn(min = 48.dp) else Modifier)
+                        .height(mainLineHeight)
                         .then(
                             if (lineNeedsFade) {
                                 Modifier.lyricsHorizontalFade(
@@ -3856,7 +3851,8 @@ private fun LyricsMarqueeLine(
                             } else {
                                 Modifier
                             }
-                        )
+                        ),
+                    contentAlignment = Alignment.CenterStart
                 ) {
                     BasicText(
                         text,
@@ -3884,15 +3880,9 @@ private fun LyricsMarqueeLine(
                 if (translation.isNotBlank()) {
                     Spacer(Modifier.height(5.dp))
                     Box(
-                        Modifier
+                        modifier = Modifier
                             .fillMaxWidth()
-                            .then(
-                                if (active && translationNeedsFade) {
-                                    Modifier.heightIn(min = 30.dp)
-                                } else {
-                                    Modifier
-                                }
-                            )
+                            .height(translationLineHeight)
                             .then(
                                 if (translationNeedsFade) {
                                     Modifier.lyricsHorizontalFade(
@@ -3902,7 +3892,8 @@ private fun LyricsMarqueeLine(
                                 } else {
                                     Modifier
                                 }
-                            )
+                            ),
+                        contentAlignment = Alignment.CenterStart
                     ) {
                         BasicText(
                             translation,
