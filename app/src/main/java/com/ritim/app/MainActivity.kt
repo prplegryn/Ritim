@@ -37,6 +37,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -50,6 +51,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -61,14 +65,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -94,7 +96,6 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
@@ -120,7 +121,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -244,16 +244,16 @@ fun RitimApp() {
     var playerCardVisible by rememberSaveable { mutableStateOf(false) }
     var playerLyricsVisible by rememberSaveable { mutableStateOf(false) }
     var playerDismissRequestId by remember { mutableIntStateOf(0) }
-    var playerBackdropProgress by remember { mutableFloatStateOf(0f) }
     var rememberedTranslationSongIds by remember {
         mutableStateOf(emptySet<Long>())
     }
     var aiLyricsSettings by remember(context) {
         mutableStateOf(loadAiLyricsTranslationSettings(context))
     }
-    val pageScale = 1f - 0.035f * playerBackdropProgress
-    val blurRadius = 14f * playerBackdropProgress
-    val overlayAlpha = 0.30f * playerBackdropProgress
+    val playerBackdropProgress = animateFloatAsState(
+        targetValue = if (playerCardVisible) 1f else 0f,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing)
+    )
     AudioPlaybackEffect(
         song = currentSong,
         playing = playing,
@@ -310,10 +310,12 @@ fun RitimApp() {
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    scaleX = pageScale
-                    scaleY = pageScale
+                    val progress = playerBackdropProgress.value
+                    val scale = 1f - 0.035f * progress
+                    scaleX = scale
+                    scaleY = scale
                 }
-                .blur(blurRadius.dp)
+                .then(if (playerCardVisible) Modifier.blur(10.dp) else Modifier)
                 .layerBackdrop(backdrop)
         )
 
@@ -327,7 +329,6 @@ fun RitimApp() {
             onMiniPlayerSelected = {
                 playbackProgress = playbackRuntimeTracker.progress
                 playerVolume = systemMusicVolumeProgress(context)
-                playerBackdropProgress = 0f
                 playerCardVisible = true
             },
             song = currentSong,
@@ -337,14 +338,15 @@ fun RitimApp() {
             backdrop = backdrop,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .blur(blurRadius.dp)
+                .then(if (playerCardVisible) Modifier.blur(10.dp) else Modifier)
         )
 
         if (playerCardVisible) {
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(Color.White.copy(alpha = overlayAlpha))
+                    .graphicsLayer { alpha = 0.30f * playerBackdropProgress.value }
+                    .background(Color.White)
             )
             PlayerCardPage(
                 song = currentSong,
@@ -364,9 +366,7 @@ fun RitimApp() {
                 onLyricsVisibleChange = { playerLyricsVisible = it },
                 onPrevious = onPreviousSelected,
                 onNext = { selectRelativeSong(1) },
-                onBackdropProgressChange = { playerBackdropProgress = it },
                 onDismiss = {
-                    playerBackdropProgress = 0f
                     playerCardVisible = false
                 },
                 modifier = Modifier.fillMaxSize()
@@ -2815,7 +2815,6 @@ private fun PlayerCardPage(
     onLyricsVisibleChange: (Boolean) -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
-    onBackdropProgressChange: (Float) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -2824,7 +2823,7 @@ private fun PlayerCardPage(
     val progress = remember { Animatable(0f) }
     val dragOffset = remember { Animatable(0f) }
     var lastDownwardDrag by remember { mutableFloatStateOf(0f) }
-    val latestOnBackdropProgressChange by rememberUpdatedState(onBackdropProgressChange)
+    var coverBackdropReady by remember(song.id) { mutableStateOf(false) }
     var translationActiveSongId by rememberSaveable { mutableStateOf<Long?>(null) }
     val translationActive = translationActiveSongId == song.id
     val lyricsState = rememberSongLyricsState(song)
@@ -2854,9 +2853,21 @@ private fun PlayerCardPage(
             onRememberedTranslationSongIdsChange(rememberedTranslationSongIds - song.id)
         }
     }
-    val lyricsProgress by animateFloatAsState(
+    var lyricsLayerActive by remember { mutableStateOf(lyricsVisible) }
+    val latestLyricsVisible by rememberUpdatedState(lyricsVisible)
+    LaunchedEffect(lyricsVisible) {
+        if (lyricsVisible) {
+            lyricsLayerActive = true
+        }
+    }
+    val lyricsProgress = animateFloatAsState(
         targetValue = if (lyricsVisible) 1f else 0f,
-        animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing)
+        animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+        finishedListener = { value ->
+            if (value <= 0.001f && !latestLyricsVisible) {
+                lyricsLayerActive = false
+            }
+        }
     )
     val currentPositionMs = (song.durationMs * playbackProgress.coerceIn(0f, 1f)).toLong()
     val activeLyricIndex = lyrics.indexOfLast { it.timeMs <= currentPositionMs }
@@ -2868,6 +2879,15 @@ private fun PlayerCardPage(
             animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing)
         )
     }
+    LaunchedEffect(song.id) {
+        coverBackdropReady = false
+        delay(90)
+        coverBackdropReady = true
+    }
+    val coverBackdropAlpha = animateFloatAsState(
+        targetValue = if (coverBackdropReady) 1f else 0f,
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
+    )
 
     LaunchedEffect(dismissRequestId) {
         if (dismissRequestId > 0) {
@@ -2881,7 +2901,6 @@ private fun PlayerCardPage(
     }
 
     BoxWithConstraints(modifier) {
-        val density = LocalDensity.current
         val screenHeight = constraints.maxHeight.toFloat()
         val compactPlayerLayout = maxHeight < 700.dp
         val coverSize = minOf(
@@ -2910,9 +2929,6 @@ private fun PlayerCardPage(
         val lyricsPanelEdgeInset = maxOf(0.dp, lyricsEdgeInset - 12.dp)
         val headerSpacer = if (compactPlayerLayout) 28.dp - coverLift else 42.dp - coverLift
         val translationButtonTopOffset = 14.dp + 4.dp + headerSpacer + coverSize + 26.dp
-        val coverTranslationXPx = with(density) {
-            12.dp.toPx() * lyricsProgress
-        }
         fun startDismissDrag() {
             lastDownwardDrag = 0f
         }
@@ -2983,19 +2999,6 @@ private fun PlayerCardPage(
                 }
             }
 
-        LaunchedEffect(screenHeight) {
-            snapshotFlow {
-                val offsetY = (1f - progress.value) * screenHeight + dragOffset.value
-                if (screenHeight > 0f) {
-                    (1f - offsetY / screenHeight).coerceIn(0f, 1f)
-                } else {
-                    progress.value.coerceIn(0f, 1f)
-                }
-            }.collect { backdropProgress ->
-                latestOnBackdropProgressChange(backdropProgress)
-            }
-        }
-
         Box(
             Modifier
                 .fillMaxSize()
@@ -3010,14 +3013,28 @@ private fun PlayerCardPage(
         ) {
             CoverColorField(
                 song = song,
+                useCoverImage = false,
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
                         scaleX = 1.34f
                         scaleY = 1.34f
                     }
-                    .blur(82.dp)
             )
+            if (coverBackdropReady) {
+                CoverColorField(
+                    song = song,
+                    useCoverImage = true,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = 1.34f
+                            scaleY = 1.34f
+                        }
+                        .blur(56.dp)
+                        .graphicsLayer { alpha = coverBackdropAlpha.value }
+                )
+            }
             Box(
                 Modifier
                     .fillMaxSize()
@@ -3061,16 +3078,17 @@ private fun PlayerCardPage(
                             .align(Alignment.TopCenter)
                             .playerDismissDrag(enabled = !lyricsVisible)
                             .graphicsLayer {
-                                val scale = 1f - (1f - lyricsCoverScale) * lyricsProgress
+                                val progress = lyricsProgress.value
+                                val scale = 1f - (1f - lyricsCoverScale) * progress
                                 scaleX = scale
                                 scaleY = scale
                                 transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
-                                translationX = coverTranslationXPx
+                                translationX = 12.dp.toPx() * progress
                             }
                             .clip(RoundedCornerShape(16.dp))
                     )
 
-                    if (lyricsProgress > 0.01f) {
+                    if (lyricsLayerActive) {
                         LyricsHeaderRow(
                             song = song,
                             favorite = favorite,
@@ -3083,7 +3101,7 @@ private fun PlayerCardPage(
                                 )
                                 .fillMaxWidth()
                                 .height(lyricsCoverSize)
-                                .graphicsLayer { alpha = lyricsProgress }
+                                .graphicsLayer { alpha = lyricsProgress.value }
                         )
 
                         LyricsPanel(
@@ -3102,7 +3120,7 @@ private fun PlayerCardPage(
                                 .fillMaxWidth()
                                 .height(coverSize - lyricsCoverSize - lyricsSpacing + lyricsPanelBottomExtension)
                                 .offset(y = 10.dp)
-                                .graphicsLayer { alpha = lyricsProgress }
+                                .graphicsLayer { alpha = lyricsProgress.value }
                         )
                     }
 
@@ -3144,7 +3162,7 @@ private fun PlayerCardPage(
                             onFavoriteToggle = onFavoriteToggle,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .graphicsLayer { alpha = 1f - lyricsProgress }
+                                .graphicsLayer { alpha = 1f - lyricsProgress.value }
                         )
 
                         PlayerTimeline(
@@ -3239,7 +3257,7 @@ private fun PlayerCardPage(
                 }
             }
 
-            if (lyricsProgress > 0.01f) {
+            if (lyricsLayerActive) {
                 TranslationPillButton(
                     selected = translationActive,
                     loading = translationState.loading,
@@ -3259,7 +3277,7 @@ private fun PlayerCardPage(
                         .padding(start = 28.dp + lyricsEdgeInset)
                         .align(Alignment.TopStart)
                         .offset(y = translationButtonTopOffset)
-                        .graphicsLayer { alpha = lyricsProgress }
+                        .graphicsLayer { alpha = lyricsProgress.value }
                 )
             }
 
@@ -3300,10 +3318,14 @@ private fun SolidCoverArt(
 @Composable
 private fun CoverColorField(
     song: SongSample,
+    useCoverImage: Boolean = true,
     modifier: Modifier = Modifier
 ) {
-    val cover = rememberSongCover(song)
-    val image = cover.image
+    val image = if (useCoverImage) {
+        rememberSongCover(song).image
+    } else {
+        null
+    }
     if (image != null) {
         Image(
             bitmap = image,
@@ -3451,12 +3473,16 @@ private fun TranslationPillButton(
         targetValue = if (enabled || loading || selected) 1f else 0.42f,
         animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
     )
-    val backgroundColor = when {
-        loading -> Color.White.copy(alpha = 0.24f + 0.34f * pulse.value)
-        status == LyricsTranslationStatus.Failed -> Color(0xFFFFE1E1).copy(alpha = 0.26f)
-        status == LyricsTranslationStatus.NotNeeded -> Color.White.copy(alpha = 0.20f)
-        selected -> Color.White
-        else -> Color.White.copy(alpha = 0.13f)
+    val backgroundBaseColor = when {
+        status == LyricsTranslationStatus.Failed -> Color(0xFFFFE1E1)
+        else -> Color.White
+    }
+    val backgroundAlpha = when {
+        loading -> null
+        status == LyricsTranslationStatus.Failed -> 0.26f
+        status == LyricsTranslationStatus.NotNeeded -> 0.20f
+        selected -> 1f
+        else -> 0.13f
     }
     Box(
         modifier
@@ -3467,7 +3493,11 @@ private fun TranslationPillButton(
                 alpha = enabledAlpha
             }
             .clip(RoundedCornerShape(999.dp))
-            .background(backgroundColor)
+            .drawWithContent {
+                val alpha = backgroundAlpha ?: (0.24f + 0.34f * pulse.value)
+                drawRect(backgroundBaseColor.copy(alpha = alpha))
+                drawContent()
+            }
             .semantics { contentDescription = "翻译" }
             .clickable(
                 interactionSource = interactionSource,
@@ -3635,20 +3665,18 @@ private fun LyricsPanel(
     modifier: Modifier = Modifier
 ) {
     BoxWithConstraints(modifier.clipToBounds()) {
-        val scrollState = rememberScrollState()
+        val listState = rememberLazyListState()
         val density = LocalDensity.current
-        val viewportHeightPx = constraints.maxHeight
         val activeAnchorFromTop = maxHeight * 0.35f
         val activeAnchorBottomPadding = maxHeight - activeAnchorFromTop
         val lineSpacing = 12.dp
         val activeLineShiftPx = with(density) { -3.dp.toPx() }
+        val activeLineCenterOffsetPx = with(density) { 28.dp.toPx().roundToInt() }
+        val lyricsViewportWidthPx = with(density) {
+            (maxWidth - edgePadding - edgePadding).toPx().coerceAtLeast(1f)
+        }
         var userScrollSuspended by remember { mutableStateOf(false) }
         var userScrollRequest by remember { mutableIntStateOf(0) }
-        val lineHeights = remember(lyrics) {
-            mutableStateListOf<Int>().apply {
-                repeat(lyrics.size) { add(0) }
-            }
-        }
         val manualScrollConnection = remember {
             object : NestedScrollConnection {
                 override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
@@ -3660,31 +3688,23 @@ private fun LyricsPanel(
                 }
             }
         }
-        fun scrollTargetForIndex(index: Int): Int {
-            if (lyrics.isEmpty()) {
-                return 0
+        suspend fun scrollActiveLineToAnchor(index: Int) {
+            if (lyrics.isNotEmpty()) {
+                listState.animateScrollToItem(
+                    index = index.coerceIn(0, lyrics.lastIndex),
+                    scrollOffset = activeLineCenterOffsetPx
+                )
             }
-            val targetIndex = index.coerceIn(0, lyrics.lastIndex)
-            val spacingPx = with(density) { lineSpacing.toPx().roundToInt() }
-            val activeTop = lineHeights
-                .take(targetIndex)
-                .sum() + spacingPx * targetIndex
-            val activeHeight = lineHeights
-                .getOrNull(targetIndex)
-                ?.takeIf { it > 0 }
-                ?: with(density) { 52.dp.toPx().roundToInt() }
-            return (activeTop + activeHeight / 2).coerceIn(0, scrollState.maxValue)
         }
 
         LaunchedEffect(
             lyrics.size,
             activeIndex,
-            scrollState.maxValue,
-            viewportHeightPx,
+            activeLineCenterOffsetPx,
             userScrollSuspended
         ) {
             if (lyrics.isNotEmpty() && !userScrollSuspended) {
-                scrollState.animateScrollTo(scrollTargetForIndex(activeIndex))
+                scrollActiveLineToAnchor(activeIndex)
             }
         }
 
@@ -3692,41 +3712,53 @@ private fun LyricsPanel(
             if (userScrollRequest > 0 && playing) {
                 delay(3_000)
                 userScrollSuspended = false
-                scrollState.animateScrollTo(scrollTargetForIndex(activeIndex))
             }
         }
         val bilingualVisible = translationsVisible && translatedLyrics.isNotEmpty()
         var panelCurrentBilingual by remember { mutableStateOf(bilingualVisible) }
         var panelPreviousBilingual by remember { mutableStateOf(bilingualVisible) }
+        var panelAnimating by remember { mutableStateOf(false) }
         val panelTransition = remember { Animatable(1f) }
         LaunchedEffect(bilingualVisible) {
             if (bilingualVisible != panelCurrentBilingual) {
                 panelPreviousBilingual = panelCurrentBilingual
                 panelCurrentBilingual = bilingualVisible
+                panelAnimating = true
                 panelTransition.snapTo(0f)
                 panelTransition.animateTo(
                     targetValue = 1f,
                     animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing)
                 )
+                panelAnimating = false
             }
         }
 
         @Composable
         fun LyricsColumnLayer(
             showTranslations: Boolean,
-            measureHeights: Boolean,
+            interactive: Boolean,
             modifier: Modifier = Modifier
         ) {
-            Column(
-                modifier
+            LazyColumn(
+                modifier = modifier
                     .fillMaxSize()
                     .nestedScroll(manualScrollConnection)
-                    .verticalScroll(scrollState)
-                    .padding(horizontal = edgePadding)
-                    .padding(top = activeAnchorFromTop, bottom = activeAnchorBottomPadding),
-                verticalArrangement = Arrangement.spacedBy(lineSpacing)
+                    .padding(horizontal = edgePadding),
+                state = listState,
+                contentPadding = PaddingValues(
+                    top = activeAnchorFromTop,
+                    bottom = activeAnchorBottomPadding
+                ),
+                verticalArrangement = Arrangement.spacedBy(lineSpacing),
+                userScrollEnabled = interactive
             ) {
-                lyrics.forEachIndexed { index, line ->
+                itemsIndexed(
+                    items = lyrics,
+                    key = { index, line -> "${line.timeMs}-$index" },
+                    contentType = { _, _ ->
+                        if (showTranslations) "lyric-bilingual" else "lyric"
+                    }
+                ) { index, line ->
                     val active = index == activeIndex
                     val nextTimeMs = lyrics.getOrNull(index + 1)?.timeMs
                     val lineEndMs = nextTimeMs ?: songDurationMs.takeIf { it > line.timeMs }
@@ -3744,6 +3776,7 @@ private fun LyricsPanel(
                             ""
                         },
                         activeLineShiftPx = activeLineShiftPx,
+                        viewportWidthPx = lyricsViewportWidthPx,
                         onClick = {
                             val seekDurationMs = max(
                                 1L,
@@ -3753,11 +3786,6 @@ private fun LyricsPanel(
                             userScrollSuspended = true
                             userScrollRequest += 1
                             onLyricSeek((line.timeMs.toFloat() / seekDurationMs.toFloat()).coerceIn(0f, 1f))
-                        },
-                        onHeightMeasured = { height ->
-                            if (measureHeights && lineHeights.getOrNull(index) != height) {
-                                lineHeights[index] = height
-                            }
                         }
                     )
                 }
@@ -3789,13 +3817,13 @@ private fun LyricsPanel(
                     }
                 }
             } else {
-                val transitionValue = panelTransition.value
                 val direction = if (panelCurrentBilingual) 1f else -1f
-                if (transitionValue < 1f) {
+                if (panelAnimating) {
                     LyricsColumnLayer(
                         showTranslations = panelPreviousBilingual,
-                        measureHeights = false,
+                        interactive = false,
                         modifier = Modifier.graphicsLayer {
+                            val transitionValue = panelTransition.value
                             alpha = 1f - transitionValue
                             translationX = -direction * size.width * 0.16f * transitionValue
                         }
@@ -3803,8 +3831,9 @@ private fun LyricsPanel(
                 }
                 LyricsColumnLayer(
                     showTranslations = panelCurrentBilingual,
-                    measureHeights = true,
+                    interactive = true,
                     modifier = Modifier.graphicsLayer {
+                        val transitionValue = panelTransition.value
                         alpha = 0.12f + 0.88f * transitionValue
                         translationX = direction * size.width * 0.16f * (1f - transitionValue)
                     }
@@ -3823,122 +3852,158 @@ private fun LyricsMarqueeLine(
     elapsedMs: Long,
     translation: String,
     activeLineShiftPx: Float,
+    viewportWidthPx: Float,
     onClick: () -> Unit,
-    onHeightMeasured: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
-    BoxWithConstraints(
+    val safeViewportWidthPx = viewportWidthPx.coerceAtLeast(1f)
+    val leftInsetPx = with(density) { 12.dp.toPx() }
+    var lineWidthPx by remember(text) { mutableFloatStateOf(0f) }
+    var translationWidthPx by remember(translation) { mutableFloatStateOf(0f) }
+    val activeScale = 1.34f
+    val effectiveLineWidthPx = lineWidthPx * if (active) activeScale else 1f
+    val hiddenDistancePx = (effectiveLineWidthPx + leftInsetPx - safeViewportWidthPx)
+        .coerceAtLeast(0f)
+    val effectiveTranslationWidthPx = translationWidthPx * if (active) activeScale else 1f
+    val translationHiddenDistancePx = (effectiveTranslationWidthPx + leftInsetPx - safeViewportWidthPx)
+        .coerceAtLeast(0f)
+    val marqueeOffset = remember(text) { Animatable(0f) }
+    val translationMarqueeOffset = remember(translation) { Animatable(0f) }
+    val fadeStartPx = with(density) { 8.dp.toPx() }
+    val fadeDistancePx = with(density) { 18.dp.toPx() }
+    fun fadeProgressFor(offset: Animatable<Float, *>): Float {
+        return ((-offset.value - fadeStartPx) / fadeDistancePx).coerceIn(0f, 1f)
+    }
+    val lineScale = animateFloatAsState(
+        targetValue = if (active) activeScale else 1f,
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
+    )
+    val lineShift = animateFloatAsState(
+        targetValue = if (active) activeLineShiftPx else 0f,
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
+    )
+    val lineNeedsFade = hiddenDistancePx > 1f
+    val translationNeedsFade = translationHiddenDistancePx > 1f
+    val verticalPadding = if (active) 14.dp else 6.dp
+    val mainLineHeight = if (active) 46.dp else 34.dp
+    val translationLineHeight = if (active) 25.dp else 18.dp
+
+    LaunchedEffect(scrolling, text, hiddenDistancePx, durationMs) {
+        if (scrolling && hiddenDistancePx > 1f) {
+            val edgeReserve = with(density) { 10.dp.toPx() }
+            val targetOffset = -(hiddenDistancePx + edgeReserve)
+            val elapsedProgress = elapsedMs.toFloat() / durationMs.toFloat()
+            val startingOffset = targetOffset * elapsedProgress.coerceIn(0f, 0.82f)
+            marqueeOffset.snapTo(startingOffset)
+            val remainingDuration = (durationMs - elapsedMs)
+                .coerceAtLeast(900L)
+                .coerceAtMost(12_000L)
+            delay(180)
+            marqueeOffset.animateTo(
+                targetValue = targetOffset,
+                animationSpec = tween(
+                    durationMillis = (remainingDuration - 180L).coerceAtLeast(720L).toInt(),
+                    easing = FastOutSlowInEasing
+                )
+            )
+        } else {
+            marqueeOffset.animateTo(
+                targetValue = 0f,
+                animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)
+            )
+        }
+    }
+
+    LaunchedEffect(scrolling, translation, translationHiddenDistancePx, durationMs) {
+        if (translation.isNotBlank() && scrolling && translationHiddenDistancePx > 1f) {
+            val edgeReserve = with(density) { 10.dp.toPx() }
+            val targetOffset = -(translationHiddenDistancePx + edgeReserve)
+            val elapsedProgress = elapsedMs.toFloat() / durationMs.toFloat()
+            val startingOffset = targetOffset * elapsedProgress.coerceIn(0f, 0.82f)
+            translationMarqueeOffset.snapTo(startingOffset)
+            val remainingDuration = (durationMs - elapsedMs)
+                .coerceAtLeast(900L)
+                .coerceAtMost(12_000L)
+            delay(180)
+            translationMarqueeOffset.animateTo(
+                targetValue = targetOffset,
+                animationSpec = tween(
+                    durationMillis = (remainingDuration - 180L).coerceAtLeast(720L).toInt(),
+                    easing = FastOutSlowInEasing
+                )
+            )
+        } else {
+            translationMarqueeOffset.animateTo(
+                targetValue = 0f,
+                animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)
+            )
+        }
+    }
+
+    Box(
         modifier
             .fillMaxWidth()
-            .onSizeChanged { size -> onHeightMeasured(size.height) }
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                role = Role.Button,
+                onClick = onClick
+            )
+            .padding(vertical = verticalPadding)
     ) {
-        val viewportWidthPx = constraints.maxWidth.toFloat()
-        val leftInsetPx = with(density) { 12.dp.toPx() }
-        var lineWidthPx by remember(text) { mutableFloatStateOf(0f) }
-        var translationWidthPx by remember(translation) { mutableFloatStateOf(0f) }
-        val activeScale = 1.34f
-        val effectiveLineWidthPx = lineWidthPx * if (active) activeScale else 1f
-        val hiddenDistancePx = (effectiveLineWidthPx + leftInsetPx - viewportWidthPx)
-            .coerceAtLeast(0f)
-        val effectiveTranslationWidthPx = translationWidthPx * if (active) activeScale else 1f
-        val translationHiddenDistancePx = (effectiveTranslationWidthPx + leftInsetPx - viewportWidthPx)
-            .coerceAtLeast(0f)
-        val marqueeOffset = remember(text) { Animatable(0f) }
-        val translationMarqueeOffset = remember(translation) { Animatable(0f) }
-        val leftFadeProgress = with(density) {
-            ((-marqueeOffset.value - 8.dp.toPx()) / 18.dp.toPx()).coerceIn(0f, 1f)
-        }
-        val translationLeftFadeProgress = with(density) {
-            ((-translationMarqueeOffset.value - 8.dp.toPx()) / 18.dp.toPx()).coerceIn(0f, 1f)
-        }
-        val lineScale by animateFloatAsState(
-            targetValue = if (active) activeScale else 1f,
-            animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
-        )
-        val lineShift by animateFloatAsState(
-            targetValue = if (active) activeLineShiftPx else 0f,
-            animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
-        )
-        val lineNeedsFade = hiddenDistancePx > 1f
-        val translationNeedsFade = translationHiddenDistancePx > 1f
-        val verticalPadding = if (active) 14.dp else 6.dp
-        val mainLineHeight = if (active) 46.dp else 34.dp
-        val translationLineHeight = if (active) 25.dp else 18.dp
-
-        LaunchedEffect(scrolling, text, hiddenDistancePx, durationMs) {
-            if (scrolling && hiddenDistancePx > 1f) {
-                val edgeReserve = with(density) { 10.dp.toPx() }
-                val targetOffset = -(hiddenDistancePx + edgeReserve)
-                val elapsedProgress = elapsedMs.toFloat() / durationMs.toFloat()
-                val startingOffset = targetOffset * elapsedProgress.coerceIn(0f, 0.82f)
-                marqueeOffset.snapTo(startingOffset)
-                val remainingDuration = (durationMs - elapsedMs)
-                    .coerceAtLeast(900L)
-                    .coerceAtMost(12_000L)
-                delay(180)
-                marqueeOffset.animateTo(
-                    targetValue = targetOffset,
-                    animationSpec = tween(
-                        durationMillis = (remainingDuration - 180L).coerceAtLeast(720L).toInt(),
-                        easing = FastOutSlowInEasing
+        Column {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(mainLineHeight)
+                    .then(
+                        if (lineNeedsFade) {
+                            Modifier.lyricsHorizontalFade(
+                                edgeWidth = 28.dp,
+                                leftFadeProgress = { fadeProgressFor(marqueeOffset) }
+                            )
+                        } else {
+                            Modifier
+                        }
+                    ),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                BasicText(
+                    text,
+                    modifier = Modifier.graphicsLayer {
+                        translationX = leftInsetPx + marqueeOffset.value + lineShift.value
+                        val scale = lineScale.value
+                        scaleX = scale
+                        scaleY = scale
+                        transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
+                    },
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Visible,
+                    onTextLayout = { result ->
+                        lineWidthPx = if (result.lineCount > 0) result.getLineRight(0) else 0f
+                    },
+                    style = TextStyle(
+                        color = Color.White.copy(alpha = if (active) 0.92f else 0.44f),
+                        fontSize = 16.sp,
+                        lineHeight = 34.sp,
+                        fontFamily = FontFamily.SansSerif,
+                        fontWeight = FontWeight.Bold
                     )
                 )
-            } else {
-                marqueeOffset.animateTo(
-                    targetValue = 0f,
-                    animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)
-                )
             }
-        }
-
-        LaunchedEffect(scrolling, translation, translationHiddenDistancePx, durationMs) {
-            if (translation.isNotBlank() && scrolling && translationHiddenDistancePx > 1f) {
-                val edgeReserve = with(density) { 10.dp.toPx() }
-                val targetOffset = -(translationHiddenDistancePx + edgeReserve)
-                val elapsedProgress = elapsedMs.toFloat() / durationMs.toFloat()
-                val startingOffset = targetOffset * elapsedProgress.coerceIn(0f, 0.82f)
-                translationMarqueeOffset.snapTo(startingOffset)
-                val remainingDuration = (durationMs - elapsedMs)
-                    .coerceAtLeast(900L)
-                    .coerceAtMost(12_000L)
-                delay(180)
-                translationMarqueeOffset.animateTo(
-                    targetValue = targetOffset,
-                    animationSpec = tween(
-                        durationMillis = (remainingDuration - 180L).coerceAtLeast(720L).toInt(),
-                        easing = FastOutSlowInEasing
-                    )
-                )
-            } else {
-                translationMarqueeOffset.animateTo(
-                    targetValue = 0f,
-                    animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)
-                )
-            }
-        }
-
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    role = Role.Button,
-                    onClick = onClick
-                )
-                .padding(vertical = verticalPadding)
-        ) {
-            Column {
+            if (translation.isNotBlank()) {
+                Spacer(Modifier.height(5.dp))
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(mainLineHeight)
+                        .height(translationLineHeight)
                         .then(
-                            if (lineNeedsFade) {
+                            if (translationNeedsFade) {
                                 Modifier.lyricsHorizontalFade(
                                     edgeWidth = 28.dp,
-                                    leftFadeProgress = leftFadeProgress
+                                    leftFadeProgress = { fadeProgressFor(translationMarqueeOffset) }
                                 )
                             } else {
                                 Modifier
@@ -3947,69 +4012,28 @@ private fun LyricsMarqueeLine(
                     contentAlignment = Alignment.CenterStart
                 ) {
                     BasicText(
-                        text,
+                        translation,
                         modifier = Modifier.graphicsLayer {
-                            translationX = leftInsetPx + marqueeOffset.value + lineShift
-                            scaleX = lineScale
-                            scaleY = lineScale
+                            translationX = leftInsetPx + translationMarqueeOffset.value + lineShift.value
+                            val scale = lineScale.value
+                            scaleX = scale
+                            scaleY = scale
                             transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
                         },
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Visible,
                         onTextLayout = { result ->
-                            lineWidthPx = if (result.lineCount > 0) result.getLineRight(0) else 0f
+                            translationWidthPx = if (result.lineCount > 0) result.getLineRight(0) else 0f
                         },
                         style = TextStyle(
-                            color = Color.White.copy(alpha = if (active) 0.92f else 0.44f),
-                            fontSize = 16.sp,
-                            lineHeight = 34.sp,
+                            color = Color.White.copy(alpha = if (active) 0.72f else 0.44f),
+                            fontSize = 12.sp,
+                            lineHeight = 18.sp,
                             fontFamily = FontFamily.SansSerif,
                             fontWeight = FontWeight.Bold
                         )
                     )
-                }
-                if (translation.isNotBlank()) {
-                    Spacer(Modifier.height(5.dp))
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(translationLineHeight)
-                            .then(
-                                if (translationNeedsFade) {
-                                    Modifier.lyricsHorizontalFade(
-                                        edgeWidth = 28.dp,
-                                        leftFadeProgress = translationLeftFadeProgress
-                                    )
-                                } else {
-                                    Modifier
-                                }
-                            ),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        BasicText(
-                            translation,
-                            modifier = Modifier.graphicsLayer {
-                                translationX = leftInsetPx + translationMarqueeOffset.value + lineShift
-                                scaleX = lineScale
-                                scaleY = lineScale
-                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
-                            },
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Visible,
-                            onTextLayout = { result ->
-                                translationWidthPx = if (result.lineCount > 0) result.getLineRight(0) else 0f
-                            },
-                            style = TextStyle(
-                                color = Color.White.copy(alpha = if (active) 0.72f else 0.44f),
-                                fontSize = 12.sp,
-                                lineHeight = 18.sp,
-                                fontFamily = FontFamily.SansSerif,
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                    }
                 }
             }
         }
@@ -4045,7 +4069,7 @@ private fun Modifier.lyricsVerticalFade(
 
 private fun Modifier.lyricsHorizontalFade(
     edgeWidth: Dp,
-    leftFadeProgress: Float
+    leftFadeProgress: () -> Float
 ): Modifier =
     graphicsLayer {
         compositingStrategy = CompositingStrategy.Offscreen
@@ -4054,10 +4078,11 @@ private fun Modifier.lyricsHorizontalFade(
         val edgePx = edgeWidth.toPx().coerceAtMost(size.width / 2f)
         if (edgePx > 0f && size.width > 0f) {
             val edgeStop = edgePx / size.width
+            val leftProgress = leftFadeProgress().coerceIn(0f, 1f)
             drawRect(
                 brush = Brush.horizontalGradient(
                     colorStops = arrayOf(
-                        0f to Color.Black.copy(alpha = 1f - leftFadeProgress.coerceIn(0f, 1f)),
+                        0f to Color.Black.copy(alpha = 1f - leftProgress),
                         edgeStop to Color.Black,
                         (1f - edgeStop) to Color.Black,
                         1f to Color.Transparent
